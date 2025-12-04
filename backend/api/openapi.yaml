@@ -1,0 +1,306 @@
+openapi: 3.0.0
+info:
+  title: Traveller Backend API
+  description: API for Traveller - Indian public transport application
+  version: 1.0.0
+  contact:
+    name: API Support
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+
+paths:
+  /journeys/plan:
+    post:
+      summary: Plan a journey
+      description: Plan a journey from origin to destination
+      parameters:
+        - name: from_lat
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+        - name: from_lon
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+        - name: to_lat
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+        - name: to_lon
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+        - name: departure_time
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Journey options
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  options:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JourneyOption'
+                  count:
+                    type: integer
+
+  /stops:
+    get:
+      summary: List stops
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of stops
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stops:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Stop'
+                  count:
+                    type: integer
+
+  /stops/{id}:
+    get:
+      summary: Get stop details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stop details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stop'
+
+  /stops/nearby:
+    get:
+      summary: Find nearby stops
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+        - name: lon
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+        - name: radius
+          in: query
+          schema:
+            type: number
+            default: 500
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Nearby stops
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stops:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Stop'
+                  count:
+                    type: integer
+
+  /routes:
+    get:
+      summary: List routes
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: agency_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of routes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Route'
+                  count:
+                    type: integer
+
+  /routes/{id}:
+    get:
+      summary: Get route details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Route details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+
+components:
+  schemas:
+    Stop:
+      type: object
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        latitude:
+          type: number
+          format: float
+        longitude:
+          type: number
+          format: float
+        zone_id:
+          type: string
+        url:
+          type: string
+        location_type:
+          type: integer
+        parent_station:
+          type: string
+        timezone:
+          type: string
+        wheelchair_boarding:
+          type: integer
+
+    Route:
+      type: object
+      properties:
+        id:
+          type: string
+        agency_id:
+          type: string
+        short_name:
+          type: string
+        long_name:
+          type: string
+        description:
+          type: string
+        type:
+          type: integer
+        url:
+          type: string
+        color:
+          type: string
+        text_color:
+          type: string
+
+    JourneyOption:
+      type: object
+      properties:
+        duration:
+          type: integer
+          description: Duration in minutes
+        transfers:
+          type: integer
+        walking_time:
+          type: integer
+          description: Walking time in minutes
+        legs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JourneyLeg'
+        departure_time:
+          type: string
+          format: date-time
+        arrival_time:
+          type: string
+          format: date-time
+
+    JourneyLeg:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [walking, bus, metro, train]
+        route_id:
+          type: string
+        route_name:
+          type: string
+        from_stop_id:
+          type: string
+        from_stop_name:
+          type: string
+        to_stop_id:
+          type: string
+        to_stop_name:
+          type: string
+        departure_time:
+          type: string
+          format: date-time
+        arrival_time:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+        stop_count:
+          type: integer
+
+

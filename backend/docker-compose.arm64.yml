@@ -1,0 +1,54 @@
+version: '3.8'
+
+# Alternative configuration for Apple Silicon (ARM64) with explicit platform specification
+# Use this if you encounter platform mismatch issues
+
+services:
+  postgres:
+    image: postgis/postgis:14-3.2
+    platform: linux/amd64  # Force AMD64 emulation on ARM64
+    container_name: transit_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: transit_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+      - ./migrations:/docker-entrypoint-initdb.d/migrations
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - transit_network
+
+  redis:
+    image: redis:7-alpine
+    # Redis Alpine supports ARM64 natively, but can also use AMD64
+    platform: linux/amd64  # Optional: remove if you want native ARM64
+    container_name: transit_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - transit_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  transit_network:
+    driver: bridge
+

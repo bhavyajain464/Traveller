@@ -1,0 +1,53 @@
+# GTFS Data Files (too large for GitHub)
+DMRC_GTFS/
+GTFS*/
+*.gtfs
+in-karnataka-*/
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/
+
+# Database
+*.db
+*.sqlite
+
+# Docker
+docker-compose.override.yml
+
+# Data scraper output
+data-scraper/output/
+

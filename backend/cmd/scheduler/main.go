@@ -1,0 +1,56 @@
+package main
+
+import (
+	"log"
+	"time"
+
+	"indian-transit-backend/internal/config"
+	"indian-transit-backend/internal/database"
+	"indian-transit-backend/internal/services"
+)
+
+// Scheduler runs daily tasks like bill generation
+func main() {
+	cfg := config.Load()
+
+	// Initialize database
+	db, err := database.New(
+		cfg.Database.Host,
+		cfg.Database.Port,
+		cfg.Database.User,
+		cfg.Database.Password,
+		cfg.Database.DBName,
+		cfg.Database.SSLMode,
+	)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	billService := services.NewDailyBillService(db)
+
+	// Run bill generation daily at 1 AM
+	ticker := time.NewTicker(24 * time.Hour)
+	
+	// Run immediately on startup for yesterday's bills
+	yesterday := time.Now().AddDate(0, 0, -1)
+	log.Printf("Generating bills for %s", yesterday.Format("2006-01-02"))
+	if err := billService.GenerateDailyBills(yesterday); err != nil {
+		log.Printf("Error generating bills: %v", err)
+	} else {
+		log.Printf("Successfully generated bills for %s", yesterday.Format("2006-01-02"))
+	}
+
+	// Schedule daily runs
+	for range ticker.C {
+		yesterday := time.Now().AddDate(0, 0, -1)
+		log.Printf("Generating bills for %s", yesterday.Format("2006-01-02"))
+		if err := billService.GenerateDailyBills(yesterday); err != nil {
+			log.Printf("Error generating bills: %v", err)
+		} else {
+			log.Printf("Successfully generated bills for %s", yesterday.Format("2006-01-02"))
+		}
+	}
+}
+
+
