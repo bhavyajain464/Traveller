@@ -7,6 +7,7 @@ type RouteBoarding struct {
 	ID              string     `json:"id" db:"id"`
 	SessionID       string     `json:"session_id" db:"session_id"`
 	RouteID         string     `json:"route_id" db:"route_id"`
+	VehicleID      *string    `json:"vehicle_id,omitempty" db:"vehicle_id"` // Specific vehicle boarded
 	BoardingStopID  string     `json:"boarding_stop_id" db:"boarding_stop_id"`
 	AlightingStopID *string    `json:"alighting_stop_id,omitempty" db:"alighting_stop_id"`
 	BoardingTime    time.Time  `json:"boarding_time" db:"boarding_time"`

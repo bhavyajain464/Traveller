@@ -39,12 +39,15 @@ func main() {
 	}
 
 	// Initialize services
+	userService := services.NewUserService(db)
 	stopService := services.NewStopService(db)
 	routeService := services.NewRouteService(db)
 	fareService := services.NewFareService(db)
 	routePlanner := services.NewRoutePlanner(db, stopService, routeService, fareService)
 	journeySessionService := services.NewJourneySessionService(db, stopService, fareService, routePlanner)
-	routeBoardingService := services.NewRouteBoardingService(db, stopService, fareService, journeySessionService)
+	vehicleLocationService := services.NewVehicleLocationService(db, routeService, stopService)
+	routeBoardingService := services.NewRouteBoardingService(db, stopService, fareService, journeySessionService, vehicleLocationService)
+	autoAlightService := services.NewAutoAlightService(routeBoardingService, vehicleLocationService, stopService)
 	dailyBillService := services.NewDailyBillService(db)
 	
 	var realtimeService *services.RealtimeService
@@ -56,13 +59,15 @@ func main() {
 	}
 
 	// Initialize handlers
+	userHandler := handlers.NewUserHandler(userService)
 	journeyHandler := handlers.NewJourneyHandler(routePlanner)
 	stopHandler := handlers.NewStopHandler(stopService)
 	routeHandler := handlers.NewRouteHandler(routeService)
 	realtimeHandler := handlers.NewRealtimeHandler(realtimeService)
 	fareHandler := handlers.NewFareHandler(fareService)
 	sessionHandler := handlers.NewJourneySessionHandler(journeySessionService, routeBoardingService)
-	boardingHandler := handlers.NewRouteBoardingHandler(routeBoardingService)
+	boardingHandler := handlers.NewRouteBoardingHandler(routeBoardingService, journeySessionService, autoAlightService, vehicleLocationService)
+	vehicleLocationHandler := handlers.NewVehicleLocationHandler(vehicleLocationService)
 	billHandler := handlers.NewDailyBillHandler(dailyBillService)
 
 	// Setup router
@@ -72,6 +77,14 @@ func main() {
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
+		// Users
+		users := v1.Group("/users")
+		{
+			users.POST("", userHandler.CreateUser)
+			users.GET("/:id", userHandler.GetUser)
+			users.DELETE("/phone/:phone", userHandler.DeleteUserByPhone)
+		}
+
 		// Journey planning
 		v1.POST("/journeys/plan", journeyHandler.PlanJourney)
 
@@ -102,6 +115,13 @@ func main() {
 			realtime.GET("/trips/:id", realtimeHandler.GetTripRealtime)
 		}
 
+		// Vehicle Locations (for testing/mocking)
+		vehicles := v1.Group("/vehicles")
+		{
+			vehicles.POST("/mock", vehicleLocationHandler.AddMockVehicle)           // Add mock vehicle for testing
+			vehicles.GET("/:vehicle_id", vehicleLocationHandler.GetVehicleLocation) // Get vehicle location
+		}
+
 		// Fares
 		fares := v1.Group("/fares")
 		{
@@ -121,8 +141,10 @@ func main() {
 		// Route Boardings (Track actual routes user takes)
 		boardings := v1.Group("/boardings")
 		{
-			boardings.POST("/board", boardingHandler.BoardRoute)           // Record boarding a route
+			boardings.POST("/board", boardingHandler.BoardRoute)           // Record boarding a route (manual)
+			boardings.POST("/auto-board", boardingHandler.AutoDetectAndBoard) // Auto-detect vehicle and board
 			boardings.POST("/alight", boardingHandler.AlightRoute)          // Record alighting from route
+			boardings.POST("/continuous-location", boardingHandler.UpdateContinuousLocation) // Continuous location updates with auto-alighting
 			boardings.GET("/sessions/:session_id", boardingHandler.GetSessionBoardings) // Get all boardings for session
 			boardings.GET("/sessions/:session_id/active", boardingHandler.GetActiveBoarding) // Get active boarding
 		}

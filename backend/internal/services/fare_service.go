@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"math"
 	"strings"
 
@@ -136,11 +137,28 @@ func (s *FareService) CalculateDistance(fromStopID, toStopID string) float64 {
 	var distance float64
 	err := s.db.QueryRow(query, fromStopID, toStopID).Scan(&distance)
 	if err != nil {
-		// Fallback: estimate based on stop count (rough approximation)
-		// Assume average 500m between stops
-		return 0.5
+		// Debug: Log the error
+		fmt.Printf("[CalculateDistance] Error calculating distance between stops %s and %s: %v\n", fromStopID, toStopID, err)
+		
+		// Try alternative: use lat/lon directly if location column doesn't exist
+		query2 := `SELECT 
+			ST_Distance(
+				ST_MakePoint(s1.stop_lon, s1.stop_lat)::geography,
+				ST_MakePoint(s2.stop_lon, s2.stop_lat)::geography
+			) / 1000.0 as distance_km
+			FROM stops s1, stops s2
+			WHERE s1.stop_id = $1 AND s2.stop_id = $2`
+		
+		err2 := s.db.QueryRow(query2, fromStopID, toStopID).Scan(&distance)
+		if err2 != nil {
+			fmt.Printf("[CalculateDistance] Alternative query also failed: %v\n", err2)
+			// Fallback: estimate based on stop count (rough approximation)
+			// Assume average 500m between stops
+			return 0.5
+		}
 	}
 
+	fmt.Printf("[CalculateDistance] Stop %s to %s: %.3f km\n", fromStopID, toStopID, distance)
 	return distance
 }
 
@@ -218,12 +236,18 @@ func (s *FareService) CalculateRouteSegmentFare(routeID, fromStopID, toStopID st
 		multiplier = rules.ExpressBusMultiplier
 	}
 
+	fmt.Printf("[CalculateRouteSegmentFare] Route: %s, Type: %s, Multiplier: %.2f, Distance: %.3f km, FarePerKm: %.2f\n", 
+		routeID, routeType, multiplier, distance, rules.FarePerKm)
+
 	fare := distance * rules.FarePerKm * multiplier
 	if fare < rules.BaseFare {
 		fare = rules.BaseFare
 	}
 
-	return math.Round(fare*100) / 100
+	finalFare := math.Round(fare*100) / 100
+	fmt.Printf("[CalculateRouteSegmentFare] Final fare: ₹%.2f (distance: %.3f km × %.2f/km × %.2f multiplier, min: ₹%.2f)\n", 
+		finalFare, distance, rules.FarePerKm, multiplier, rules.BaseFare)
+	return finalFare
 }
 
 func containsIgnoreCase(s, substr string) bool {

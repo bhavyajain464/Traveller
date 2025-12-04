@@ -182,4 +182,13 @@ func (s *RouteService) GetTrips(routeID string, limit int) ([]models.Trip, error
 	return trips, nil
 }
 
+// GetRouteByID is an alias for GetByID (for consistency)
+func (s *RouteService) GetRouteByID(routeID string) (*models.Route, error) {
+	return s.GetByID(routeID)
+}
+
+// GetActiveRoutes returns a list of active routes (for vehicle tracking)
+func (s *RouteService) GetActiveRoutes(limit int) ([]models.Route, error) {
+	return s.List(limit, 0, "")
+}
 
