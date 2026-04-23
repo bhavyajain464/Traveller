@@ -19,9 +19,13 @@ func NewDailyBillHandler(billService *services.DailyBillService) *DailyBillHandl
 
 // GetDailyBill retrieves daily bill for a user
 func (h *DailyBillHandler) GetDailyBill(c *gin.Context) {
-	userID := c.Param("user_id")
-	if userID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+	userID := authUser.ID
+	if requestedUserID := c.Param("user_id"); requestedUserID != "" && requestedUserID != authUser.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "cannot access bills for another user"})
 		return
 	}
 
@@ -50,9 +54,13 @@ func (h *DailyBillHandler) GetDailyBill(c *gin.Context) {
 
 // GetPendingBills returns all pending bills for a user
 func (h *DailyBillHandler) GetPendingBills(c *gin.Context) {
-	userID := c.Param("user_id")
-	if userID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+	userID := authUser.ID
+	if requestedUserID := c.Param("user_id"); requestedUserID != "" && requestedUserID != authUser.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "cannot access bills for another user"})
 		return
 	}
 
@@ -76,6 +84,11 @@ func (h *DailyBillHandler) GetPendingBills(c *gin.Context) {
 
 // PayBill marks a bill as paid
 func (h *DailyBillHandler) PayBill(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	billID := c.Param("bill_id")
 	if billID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bill_id is required"})
@@ -92,22 +105,36 @@ func (h *DailyBillHandler) PayBill(c *gin.Context) {
 		return
 	}
 
-	err := h.billService.MarkBillAsPaid(billID, req.PaymentID, req.PaymentMethod)
+	bill, err := h.billService.GetBillByID(billID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if bill.UserID != authUser.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "cannot pay a bill for another user"})
+		return
+	}
+
+	err = h.billService.MarkBillAsPaid(billID, req.PaymentID, req.PaymentMethod)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark bill as paid"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":      "Bill marked as paid",
-		"bill_id":      billID,
-		"payment_id":   req.PaymentID,
+		"message":        "Bill marked as paid",
+		"bill_id":        billID,
+		"payment_id":     req.PaymentID,
 		"payment_method": req.PaymentMethod,
 	})
 }
 
 // GenerateDailyBills generates bills for all users for a specific date (admin endpoint)
 func (h *DailyBillHandler) GenerateDailyBills(c *gin.Context) {
+	if requireAuthenticatedUser(c) == nil {
+		return
+	}
+
 	dateStr := c.Query("date")
 	var billDate time.Time
 	var err error
@@ -130,7 +157,7 @@ func (h *DailyBillHandler) GenerateDailyBills(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":  "Daily bills generated successfully",
+		"message":   "Daily bills generated successfully",
 		"bill_date": billDate.Format("2006-01-02"),
 	})
 }
@@ -142,4 +169,3 @@ func (h *DailyBillHandler) calculateTotalAmount(bills []models.DailyBill) float6
 	}
 	return total
 }
-

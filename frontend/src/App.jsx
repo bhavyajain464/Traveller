@@ -13,7 +13,6 @@ import RoutesPage from "./pages/RoutesPage";
 import SessionsPage from "./pages/SessionsPage";
 import StopsPage from "./pages/StopsPage";
 import TicketsPage from "./pages/TicketsPage";
-import UsersPage from "./pages/UsersPage";
 import VehiclesPage from "./pages/VehiclesPage";
 import "./App.css";
 
@@ -33,7 +32,6 @@ function App() {
         <Route path="/departures" element={<StopsPage />} />
         <Route path="/tickets" element={<TicketsPage />} />
         <Route path="/profile" element={<ProfilePage />} />
-        <Route path="/users" element={<UsersPage />} />
         <Route path="/stops" element={<StopsPage />} />
         <Route path="/routes" element={<RoutesPage />} />
         <Route path="/routes/:id" element={<RoutesPage />} />

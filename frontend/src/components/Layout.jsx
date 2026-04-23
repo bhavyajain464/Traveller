@@ -20,7 +20,7 @@ function Layout() {
         <p>Plan, ticket, and travel through one connected flow.</p>
         <div className="sidebar-user card">
           <strong>{user?.name}</strong>
-          <span>{user?.phone}</span>
+          <span>{user?.email || user?.phone || "Signed in"}</span>
           <button
             type="button"
             className="ghost-button"

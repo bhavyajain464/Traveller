@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bufio"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -10,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	GTFS     GTFSConfig
+	Auth     AuthConfig
 }
 
 type ServerConfig struct {
@@ -40,7 +44,15 @@ type GTFSConfig struct {
 	DataPath string
 }
 
+type AuthConfig struct {
+	GoogleClientID       string
+	SessionTokenSecret   string
+	SessionDurationHours int
+}
+
 func Load() *Config {
+	loadLocalEnvFiles()
+
 	return &Config{
 		Server: ServerConfig{
 			Port:         getEnv("SERVER_PORT", "8080"),
@@ -66,6 +78,56 @@ func Load() *Config {
 		GTFS: GTFSConfig{
 			DataPath: getEnv("GTFS_DATA_PATH", "../DMRC_GTFS"),
 		},
+		Auth: AuthConfig{
+			GoogleClientID:       getEnv("GOOGLE_CLIENT_ID", ""),
+			SessionTokenSecret:   getEnv("SESSION_TOKEN_SECRET", "traveller-dev-session-secret"),
+			SessionDurationHours: getEnvAsInt("SESSION_DURATION_HOURS", 24*30),
+		},
+	}
+}
+
+func loadLocalEnvFiles() {
+	candidates := []string{
+		".env",
+		".env.local",
+		filepath.Join("backend", ".env"),
+		filepath.Join("backend", ".env.local"),
+	}
+
+	for _, path := range candidates {
+		loadEnvFile(path)
+	}
+}
+
+func loadEnvFile(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+
+		value = strings.Trim(value, `"'`)
+		if os.Getenv(key) == "" {
+			_ = os.Setenv(key, value)
+		}
 	}
 }
 

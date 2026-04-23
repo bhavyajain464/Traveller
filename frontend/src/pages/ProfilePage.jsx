@@ -19,8 +19,8 @@ function ProfilePage() {
         <section className="card">
           <p className="eyebrow">Account</p>
           <h3>{user?.name}</h3>
-          <p>{user?.phone}</p>
-          <p className="status-muted">Personal QR identity in this frontend-first prototype.</p>
+          <p>{user?.email || user?.phone || "No primary contact available"}</p>
+          <p className="status-muted">Signed in with {user?.authProvider || "unknown"} and ready for backend-backed sessions.</p>
         </section>
 
         <section className="card">
@@ -55,7 +55,6 @@ function ProfilePage() {
           <Link to="/bills">Bills</Link>
           <Link to="/realtime">Realtime</Link>
           <Link to="/vehicles">Vehicles</Link>
-          <Link to="/users">Users</Link>
         </div>
       </section>
     </section>

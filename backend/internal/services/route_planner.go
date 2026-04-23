@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"sort"
 	"time"
 
@@ -20,6 +22,21 @@ type RoutePlanner struct {
 	maxWalkMeters float64
 }
 
+type manualTransferLink struct {
+	FromStopID string
+	ToStopID   string
+	Duration   int
+}
+
+var manualTransferLinks = []manualTransferLink{
+	{
+		// Practical interchange between Delhi Metro Blue/Magenta side and Noida Aqua line.
+		FromStopID: "metro:81",  // Botanical Garden
+		ToStopID:   "metro:500", // Noida Sector 51
+		Duration:   12,
+	},
+}
+
 func NewRoutePlanner(db *database.DB, stopService *StopService, routeService *RouteService, fareService *FareService) *RoutePlanner {
 	return &RoutePlanner{
 		db:            db,
@@ -27,13 +44,25 @@ func NewRoutePlanner(db *database.DB, stopService *StopService, routeService *Ro
 		routeService:  routeService,
 		fareService:   fareService,
 		maxTransfers:  3,
-		maxWalkMeters: 1000.0, // 1km max walking distance
+		maxWalkMeters: 3000.0, // adapt up to 3km so sparse areas like airport edges can still find transit
 	}
 }
 
 func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.JourneyOption, error) {
-	// Find nearest stops to origin and destination, ensuring mix of metro and bus
-	originStops, err := rp.findNearbyStopsWithModeMix(req.FromLat, req.FromLon, rp.maxWalkMeters, 10)
+	requestedJourneyDate := time.Now()
+	if req.Date != nil {
+		requestedJourneyDate = *req.Date
+	}
+
+	resolvedJourneyDate, err := rp.resolveJourneyDate(requestedJourneyDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve service date: %w", err)
+	}
+
+	departureTime := rp.resolveDepartureTime(req.DepartureTime, requestedJourneyDate, resolvedJourneyDate)
+
+	// Find nearest stops to origin and destination, ensuring mix of metro and bus.
+	originStops, err := rp.findCandidateStops(req.FromLat, req.FromLon, 4)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find origin stops: %w", err)
 	}
@@ -41,7 +70,7 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 		return nil, fmt.Errorf("no stops found near origin")
 	}
 
-	destStops, err := rp.findNearbyStopsWithModeMix(req.ToLat, req.ToLon, rp.maxWalkMeters, 10)
+	destStops, err := rp.findCandidateStops(req.ToLat, req.ToLon, 4)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find destination stops: %w", err)
 	}
@@ -49,24 +78,12 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 		return nil, fmt.Errorf("no stops found near destination")
 	}
 
-	// Determine the date for the journey (for day-specific service plans)
-	journeyDate := time.Now()
-	if req.Date != nil {
-		journeyDate = *req.Date
-	}
-
-	// Use current time if departure time not specified
-	departureTime := time.Now()
-	if req.DepartureTime != nil {
-		departureTime = *req.DepartureTime
-	}
-
 	// Plan journeys from each origin stop to each destination stop
 	var allOptions []models.JourneyOption
 
 	for _, originStop := range originStops {
 		for _, destStop := range destStops {
-			options, err := rp.planBetweenStops(originStop.ID, destStop.ID, departureTime, journeyDate)
+			options, err := rp.planBetweenStops(originStop.ID, destStop.ID, departureTime, resolvedJourneyDate)
 			if err != nil {
 				continue // Skip if no route found
 			}
@@ -75,6 +92,15 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 			for i := range options {
 				originWalkTime := rp.calculateWalkTime(req.FromLat, req.FromLon, originStop.Latitude, originStop.Longitude)
 				destWalkTime := rp.calculateWalkTime(destStop.Latitude, destStop.Longitude, req.ToLat, req.ToLon)
+				firstTransitDeparture := options[i].Legs[0].DepartureTime
+				lastTransitArrival := options[i].Legs[len(options[i].Legs)-1].ArrivalTime
+				walkStartTime := firstTransitDeparture.Add(-time.Duration(originWalkTime) * time.Minute)
+
+				// Can't make this itinerary if reaching the first stop would require leaving before the requested time.
+				if walkStartTime.Before(departureTime) {
+					options[i].Duration = math.MaxInt
+					continue
+				}
 
 				// Add origin walking leg
 				if originWalkTime > 0 {
@@ -84,38 +110,51 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 						FromStopName: "Origin",
 						ToStopID:     originStop.ID,
 						ToStopName:   originStop.Name,
+						DepartureTime: walkStartTime,
+						ArrivalTime:   firstTransitDeparture,
 						Duration:     originWalkTime,
 						StopCount:    0,
 					}
 					options[i].Legs = append([]models.JourneyLeg{walkLeg}, options[i].Legs...)
 					options[i].WalkingTime += originWalkTime
-					options[i].Duration += originWalkTime
 				}
 
 				// Add destination walking leg
 				if destWalkTime > 0 {
+					destWalkStart := lastTransitArrival
+					destWalkArrival := destWalkStart.Add(time.Duration(destWalkTime) * time.Minute)
 					walkLeg := models.JourneyLeg{
 						Mode:         "walking",
 						FromStopID:   destStop.ID,
 						FromStopName: destStop.Name,
 						ToStopID:     "",
 						ToStopName:   "Destination",
+						DepartureTime: destWalkStart,
+						ArrivalTime:   destWalkArrival,
 						Duration:     destWalkTime,
 						StopCount:    0,
 					}
 					options[i].Legs = append(options[i].Legs, walkLeg)
 					options[i].WalkingTime += destWalkTime
-					options[i].Duration += destWalkTime
+					lastTransitArrival = destWalkArrival
 				}
 
-				// Update departure/arrival times
-				options[i].DepartureTime = departureTime.Add(time.Duration(-originWalkTime) * time.Minute)
-				options[i].ArrivalTime = options[i].DepartureTime.Add(time.Duration(options[i].Duration) * time.Minute)
+				options[i].DepartureTime = departureTime
+				options[i].ArrivalTime = lastTransitArrival
+				options[i].Duration = int(math.Ceil(options[i].ArrivalTime.Sub(departureTime).Minutes()))
 			}
 
 			allOptions = append(allOptions, options...)
 		}
 	}
+
+	filtered := allOptions[:0]
+	for _, option := range allOptions {
+		if option.Duration != math.MaxInt {
+			filtered = append(filtered, option)
+		}
+	}
+	allOptions = filtered
 
 	// Calculate fare for each option
 	// Use default rules (will be overridden per-leg if needed)
@@ -141,12 +180,9 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 		optI := allOptions[i]
 		optJ := allOptions[j]
 
-		// Primary: Total duration (including walking)
-		totalDurationI := optI.Duration + optI.WalkingTime
-		totalDurationJ := optJ.Duration + optJ.WalkingTime
-
-		if totalDurationI != totalDurationJ {
-			return totalDurationI < totalDurationJ
+		// Primary: total duration from requested departure to final arrival.
+		if optI.Duration != optJ.Duration {
+			return optI.Duration < optJ.Duration
 		}
 
 		// Secondary: Fewer transfers is better
@@ -159,16 +195,56 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 			return optI.WalkingTime < optJ.WalkingTime
 		}
 
-		// Quaternary: Shorter journey duration (excluding walking)
-		return optI.Duration < optJ.Duration
+		return optI.ArrivalTime.Before(optJ.ArrivalTime)
 	})
 
-	// Return up to 15 options to show variety (metro, bus, different routes)
-	if len(allOptions) > 15 {
-		allOptions = allOptions[:15]
+	allOptions = rp.removeDuplicateOptions(allOptions)
+
+	// Return the fastest 10 options.
+	if len(allOptions) > 10 {
+		allOptions = allOptions[:10]
 	}
 
 	return allOptions, nil
+}
+
+func (rp *RoutePlanner) resolveDepartureTime(explicit *time.Time, requestedDate, resolvedDate time.Time) time.Time {
+	if explicit != nil {
+		return time.Date(
+			resolvedDate.Year(),
+			resolvedDate.Month(),
+			resolvedDate.Day(),
+			explicit.Hour(),
+			explicit.Minute(),
+			explicit.Second(),
+			0,
+			resolvedDate.Location(),
+		)
+	}
+
+	// When we fall back to a different GTFS service date, using the current wall-clock
+	// time can easily push us past the end of service and produce no results at all.
+	if !sameCalendarDate(requestedDate, resolvedDate) {
+		return time.Date(
+			resolvedDate.Year(),
+			resolvedDate.Month(),
+			resolvedDate.Day(),
+			8, 0, 0, 0,
+			resolvedDate.Location(),
+		)
+	}
+
+	now := time.Now()
+	return time.Date(
+		resolvedDate.Year(),
+		resolvedDate.Month(),
+		resolvedDate.Day(),
+		now.Hour(),
+		now.Minute(),
+		now.Second(),
+		0,
+		resolvedDate.Location(),
+	)
 }
 
 func (rp *RoutePlanner) planBetweenStops(fromStopID, toStopID string, departureTime time.Time, journeyDate time.Time) ([]models.JourneyOption, error) {
@@ -180,11 +256,19 @@ func (rp *RoutePlanner) planBetweenStops(fromStopID, toStopID string, departureT
 		allOptions = append(allOptions, directOptions...)
 	}
 
-	// Also try with transfers to get alternative routes (only if no direct routes found)
+	// Transfers are significantly more expensive to search, so only use them
+	// when a stop pair has no direct service.
 	if len(allOptions) == 0 {
-		transferOptions, err := rp.findRoutesWithTransfers(fromStopID, toStopID, departureTime, journeyDate, 0)
+		transferOptions, err := rp.findSingleTransferRoutes(fromStopID, toStopID, departureTime, journeyDate)
 		if err == nil && len(transferOptions) > 0 {
 			allOptions = append(allOptions, transferOptions...)
+		}
+	}
+
+	if len(allOptions) == 0 {
+		manualOptions, err := rp.findJourneysViaManualTransfers(fromStopID, toStopID, departureTime, journeyDate)
+		if err == nil && len(manualOptions) > 0 {
+			allOptions = append(allOptions, manualOptions...)
 		}
 	}
 
@@ -198,26 +282,19 @@ func (rp *RoutePlanner) planBetweenStops(fromStopID, toStopID string, departureT
 		optI := uniqueOptions[i]
 		optJ := uniqueOptions[j]
 
-		// Primary: Total duration (including walking)
-		totalDurationI := optI.Duration + optI.WalkingTime
-		totalDurationJ := optJ.Duration + optJ.WalkingTime
-
-		if totalDurationI != totalDurationJ {
-			return totalDurationI < totalDurationJ
+		if optI.Duration != optJ.Duration {
+			return optI.Duration < optJ.Duration
 		}
 
-		// Secondary: Fewer transfers is better
 		if optI.Transfers != optJ.Transfers {
 			return optI.Transfers < optJ.Transfers
 		}
 
-		// Tertiary: Less walking time is better
 		if optI.WalkingTime != optJ.WalkingTime {
 			return optI.WalkingTime < optJ.WalkingTime
 		}
 
-		// Quaternary: Shorter journey duration (excluding walking)
-		return optI.Duration < optJ.Duration
+		return optI.ArrivalTime.Before(optJ.ArrivalTime)
 	})
 
 	// Return up to 10 options
@@ -282,6 +359,16 @@ func (rp *RoutePlanner) findDirectRoutes(fromStopID, toStopID string, departureT
 	}
 	defer rows.Close()
 
+	fromStop, err := rp.stopService.GetByID(fromStopID)
+	if err != nil {
+		return nil, err
+	}
+
+	toStop, err := rp.stopService.GetByID(toStopID)
+	if err != nil {
+		return nil, err
+	}
+
 	var options []models.JourneyOption
 	for rows.Next() {
 		var routeID, routeShortName, routeLongName, tripID, depTime, arrTime string
@@ -292,37 +379,21 @@ func (rp *RoutePlanner) findDirectRoutes(fromStopID, toStopID string, departureT
 			continue
 		}
 
-		fromStop, err := rp.stopService.GetByID(fromStopID)
+		depTimeToday, err := parseGTFSTimeOnDate(journeyDate, depTime)
 		if err != nil {
 			continue
 		}
 
-		toStop, err := rp.stopService.GetByID(toStopID)
+		arrTimeToday, err := parseGTFSTimeOnDate(journeyDate, arrTime)
 		if err != nil {
 			continue
 		}
 
-		depTimeParsed, err := time.Parse("15:04:05", depTime)
-		if err != nil {
+		if depTimeToday.Before(departureTime) {
 			continue
 		}
 
-		arrTimeParsed, err := time.Parse("15:04:05", arrTime)
-		if err != nil {
-			continue
-		}
-
-		// Adjust times to the journey date
-		depTimeToday := time.Date(journeyDate.Year(), journeyDate.Month(), journeyDate.Day(),
-			depTimeParsed.Hour(), depTimeParsed.Minute(), depTimeParsed.Second(), 0, journeyDate.Location())
-		arrTimeToday := time.Date(journeyDate.Year(), journeyDate.Month(), journeyDate.Day(),
-			arrTimeParsed.Hour(), arrTimeParsed.Minute(), arrTimeParsed.Second(), 0, journeyDate.Location())
-
-		if arrTimeToday.Before(depTimeToday) {
-			arrTimeToday = arrTimeToday.Add(24 * time.Hour)
-		}
-
-		duration := int(arrTimeToday.Sub(depTimeToday).Minutes())
+		duration := int(math.Ceil(arrTimeToday.Sub(depTimeToday).Minutes()))
 
 		// Determine transport mode based on route_type
 		// GTFS route_type: 1 = Metro/Subway, 3 = Bus
@@ -361,6 +432,316 @@ func (rp *RoutePlanner) findDirectRoutes(fromStopID, toStopID string, departureT
 		}
 
 		options = append(options, option)
+	}
+
+	return options, nil
+}
+
+func (rp *RoutePlanner) findJourneysViaManualTransfers(fromStopID, toStopID string, departureTime time.Time, journeyDate time.Time) ([]models.JourneyOption, error) {
+	var allOptions []models.JourneyOption
+
+	for _, link := range manualTransferLinks {
+		firstSegment, err := rp.planSegmentWithoutManualTransfer(fromStopID, link.FromStopID, departureTime, journeyDate)
+		if err != nil || len(firstSegment) == 0 {
+			continue
+		}
+
+		fromTransferStop, err := rp.stopService.GetByID(link.FromStopID)
+		if err != nil {
+			continue
+		}
+
+		toTransferStop, err := rp.stopService.GetByID(link.ToStopID)
+		if err != nil {
+			continue
+		}
+
+		for _, firstOption := range firstSegment {
+			transferDeparture := firstOption.ArrivalTime
+			transferArrival := transferDeparture.Add(time.Duration(link.Duration) * time.Minute)
+
+			secondSegment, err := rp.planSegmentWithoutManualTransfer(link.ToStopID, toStopID, transferArrival, journeyDate)
+			if err != nil || len(secondSegment) == 0 {
+				continue
+			}
+
+			transferLeg := models.JourneyLeg{
+				Mode:          "transfer",
+				RouteName:     "Manual transfer",
+				FromStopID:    link.FromStopID,
+				FromStopName:  fromTransferStop.Name,
+				ToStopID:      link.ToStopID,
+				ToStopName:    toTransferStop.Name,
+				DepartureTime: transferDeparture,
+				ArrivalTime:   transferArrival,
+				Duration:      link.Duration,
+				StopCount:     0,
+			}
+
+			for _, secondOption := range secondSegment {
+				combinedLegs := append([]models.JourneyLeg{}, firstOption.Legs...)
+				combinedLegs = append(combinedLegs, transferLeg)
+				combinedLegs = append(combinedLegs, secondOption.Legs...)
+
+				combined := models.JourneyOption{
+					Duration:      int(math.Ceil(secondOption.ArrivalTime.Sub(firstOption.DepartureTime).Minutes())),
+					Transfers:     firstOption.Transfers + secondOption.Transfers + 1,
+					WalkingTime:   firstOption.WalkingTime + secondOption.WalkingTime + link.Duration,
+					Legs:          combinedLegs,
+					DepartureTime: firstOption.DepartureTime,
+					ArrivalTime:   secondOption.ArrivalTime,
+				}
+				allOptions = append(allOptions, combined)
+			}
+		}
+	}
+
+	if len(allOptions) == 0 {
+		return nil, fmt.Errorf("no manual transfer route found")
+	}
+
+	return allOptions, nil
+}
+
+func (rp *RoutePlanner) planSegmentWithoutManualTransfer(fromStopID, toStopID string, departureTime time.Time, journeyDate time.Time) ([]models.JourneyOption, error) {
+	var options []models.JourneyOption
+
+	directOptions, err := rp.findDirectRoutes(fromStopID, toStopID, departureTime, journeyDate)
+	if err == nil && len(directOptions) > 0 {
+		options = append(options, directOptions...)
+	}
+
+	if len(options) == 0 {
+		transferOptions, err := rp.findSingleTransferRoutes(fromStopID, toStopID, departureTime, journeyDate)
+		if err == nil && len(transferOptions) > 0 {
+			options = append(options, transferOptions...)
+		}
+	}
+
+	if len(options) == 0 {
+		return nil, fmt.Errorf("no segment route found")
+	}
+
+	options = rp.removeDuplicateOptions(options)
+	sort.Slice(options, func(i, j int) bool {
+		if options[i].Duration != options[j].Duration {
+			return options[i].Duration < options[j].Duration
+		}
+		if options[i].Transfers != options[j].Transfers {
+			return options[i].Transfers < options[j].Transfers
+		}
+		return options[i].ArrivalTime.Before(options[j].ArrivalTime)
+	})
+
+	if len(options) > 4 {
+		options = options[:4]
+	}
+
+	return options, nil
+}
+
+func (rp *RoutePlanner) findSingleTransferRoutes(fromStopID, toStopID string, departureTime time.Time, journeyDate time.Time) ([]models.JourneyOption, error) {
+	query := `SELECT
+		route1_id, route1_short_name, route1_long_name, route1_type,
+		transfer_stop_id, transfer_stop_name,
+		first_departure_time, first_arrival_time, first_stop_count,
+		route2_id, route2_short_name, route2_long_name, route2_type,
+		second_departure_time, second_arrival_time, second_stop_count
+	FROM (
+		SELECT
+			t1.route_id AS route1_id,
+			r1.route_short_name AS route1_short_name,
+			r1.route_long_name AS route1_long_name,
+			r1.route_type AS route1_type,
+			transfer.stop_id AS transfer_stop_id,
+			s_transfer.stop_name AS transfer_stop_name,
+			st1.departure_time AS first_departure_time,
+			transfer.arrival_time AS first_arrival_time,
+			(transfer.stop_sequence - st1.stop_sequence) AS first_stop_count,
+			t2.route_id AS route2_id,
+			r2.route_short_name AS route2_short_name,
+			r2.route_long_name AS route2_long_name,
+			r2.route_type AS route2_type,
+			st3.departure_time AS second_departure_time,
+			st4.arrival_time AS second_arrival_time,
+			(st4.stop_sequence - st3.stop_sequence) AS second_stop_count,
+			ROW_NUMBER() OVER (
+				PARTITION BY t1.route_id, transfer.stop_id, t2.route_id
+				ORDER BY st1.departure_time, st4.arrival_time
+			) AS rn
+		FROM stop_times st1
+		JOIN stop_times transfer
+			ON st1.trip_id = transfer.trip_id
+			AND st1.stop_sequence < transfer.stop_sequence
+		JOIN trips t1 ON st1.trip_id = t1.trip_id
+		JOIN routes r1 ON t1.route_id = r1.route_id
+		JOIN calendar cal1 ON t1.service_id = cal1.service_id
+		JOIN stops s_transfer ON transfer.stop_id = s_transfer.stop_id
+		JOIN stop_times st3 ON st3.stop_id = transfer.stop_id
+		JOIN stop_times st4
+			ON st3.trip_id = st4.trip_id
+			AND st3.stop_sequence < st4.stop_sequence
+		JOIN trips t2 ON st3.trip_id = t2.trip_id
+		JOIN routes r2 ON t2.route_id = r2.route_id
+		JOIN calendar cal2 ON t2.service_id = cal2.service_id
+		WHERE st1.stop_id = ?
+			AND st4.stop_id = ?
+			AND t1.route_id <> t2.route_id
+			AND st1.departure_time >= ?
+			AND st3.departure_time >= transfer.arrival_time
+			AND cal1.start_date <= ?
+			AND cal1.end_date >= ?
+			AND cal2.start_date <= ?
+			AND cal2.end_date >= ?
+			AND (
+				(EXTRACT(DOW FROM ?::date) = 0 AND cal1.sunday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 1 AND cal1.monday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 2 AND cal1.tuesday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 3 AND cal1.wednesday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 4 AND cal1.thursday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 5 AND cal1.friday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 6 AND cal1.saturday = 1)
+			)
+			AND (
+				(EXTRACT(DOW FROM ?::date) = 0 AND cal2.sunday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 1 AND cal2.monday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 2 AND cal2.tuesday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 3 AND cal2.wednesday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 4 AND cal2.thursday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 5 AND cal2.friday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 6 AND cal2.saturday = 1)
+			)
+	) ranked
+	WHERE rn = 1
+	ORDER BY first_departure_time, second_arrival_time
+	LIMIT 80`
+
+	journeyDateStr := journeyDate.Format("2006-01-02")
+	departureTimeStr := departureTime.Format("15:04:05")
+	rows, err := rp.db.Query(
+		query,
+		fromStopID,
+		toStopID,
+		departureTimeStr,
+		journeyDateStr,
+		journeyDateStr,
+		journeyDateStr,
+		journeyDateStr,
+		journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr,
+		journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("transfer query failed: %w", err)
+	}
+	defer rows.Close()
+
+	fromStop, err := rp.stopService.GetByID(fromStopID)
+	if err != nil {
+		return nil, err
+	}
+
+	toStop, err := rp.stopService.GetByID(toStopID)
+	if err != nil {
+		return nil, err
+	}
+
+	var options []models.JourneyOption
+	for rows.Next() {
+		var route1ID, route1ShortName, route1LongName string
+		var route1Type, firstStopCount int
+		var transferStopID, transferStopName string
+		var firstDepartureTime, firstArrivalTime string
+		var route2ID, route2ShortName, route2LongName string
+		var route2Type, secondStopCount int
+		var secondDepartureTime, secondArrivalTime string
+
+		err := rows.Scan(
+			&route1ID, &route1ShortName, &route1LongName, &route1Type,
+			&transferStopID, &transferStopName,
+			&firstDepartureTime, &firstArrivalTime, &firstStopCount,
+			&route2ID, &route2ShortName, &route2LongName, &route2Type,
+			&secondDepartureTime, &secondArrivalTime, &secondStopCount,
+		)
+		if err != nil {
+			continue
+		}
+
+		firstDeparture, err := parseGTFSTimeOnDate(journeyDate, firstDepartureTime)
+		if err != nil {
+			continue
+		}
+		firstArrival, err := parseGTFSTimeOnDate(journeyDate, firstArrivalTime)
+		if err != nil {
+			continue
+		}
+		secondDeparture, err := parseGTFSTimeOnDate(journeyDate, secondDepartureTime)
+		if err != nil {
+			continue
+		}
+		secondArrival, err := parseGTFSTimeOnDate(journeyDate, secondArrivalTime)
+		if err != nil {
+			continue
+		}
+
+		if firstDeparture.Before(departureTime) {
+			continue
+		}
+
+		// Allow a small transfer buffer so unrealistic same-second transfers are filtered out.
+		if secondDeparture.Before(firstArrival.Add(2 * time.Minute)) {
+			continue
+		}
+
+		firstRouteName := route1ShortName
+		if firstRouteName == "" {
+			firstRouteName = route1LongName
+		}
+
+		secondRouteName := route2ShortName
+		if secondRouteName == "" {
+			secondRouteName = route2LongName
+		}
+
+		option := models.JourneyOption{
+			Duration:      int(math.Ceil(secondArrival.Sub(firstDeparture).Minutes())),
+			Transfers:     1,
+			WalkingTime:   0,
+			DepartureTime: firstDeparture,
+			ArrivalTime:   secondArrival,
+			Legs: []models.JourneyLeg{
+				{
+					Mode:          routeTypeToMode(route1Type),
+					RouteID:       route1ID,
+					RouteName:     firstRouteName,
+					FromStopID:    fromStopID,
+					FromStopName:  fromStop.Name,
+					ToStopID:      transferStopID,
+					ToStopName:    transferStopName,
+					DepartureTime: firstDeparture,
+					ArrivalTime:   firstArrival,
+					Duration:      int(math.Ceil(firstArrival.Sub(firstDeparture).Minutes())),
+					StopCount:     firstStopCount,
+				},
+				{
+					Mode:          routeTypeToMode(route2Type),
+					RouteID:       route2ID,
+					RouteName:     secondRouteName,
+					FromStopID:    transferStopID,
+					FromStopName:  transferStopName,
+					ToStopID:      toStopID,
+					ToStopName:    toStop.Name,
+					DepartureTime: secondDeparture,
+					ArrivalTime:   secondArrival,
+					Duration:      int(math.Ceil(secondArrival.Sub(secondDeparture).Minutes())),
+					StopCount:     secondStopCount,
+				},
+			},
+		}
+		options = append(options, option)
+	}
+
+	if len(options) == 0 {
+		return nil, fmt.Errorf("no transfer routes found")
 	}
 
 	return options, nil
@@ -521,7 +902,7 @@ func (rp *RoutePlanner) removeDuplicateOptions(options []models.JourneyOption) [
 		key := ""
 		for _, leg := range option.Legs {
 			if leg.RouteID != "" {
-				key += leg.RouteID + ":" + leg.FromStopID + "->" + leg.ToStopID + "|"
+				key += leg.RouteID + ":" + leg.FromStopID + "->" + leg.ToStopID + "@" + leg.DepartureTime.Format(time.RFC3339) + "|"
 			}
 		}
 
@@ -532,6 +913,84 @@ func (rp *RoutePlanner) removeDuplicateOptions(options []models.JourneyOption) [
 	}
 
 	return unique
+}
+
+func (rp *RoutePlanner) findCandidateStops(lat, lon float64, limit int) ([]models.Stop, error) {
+	radii := []float64{1000, 2000, 3000, 5000}
+	var lastStops []models.Stop
+
+	for _, radius := range radii {
+		stops, err := rp.findNearbyStopsWithModeMix(lat, lon, radius, limit)
+		if err != nil {
+			continue
+		}
+		if len(stops) > 0 {
+			lastStops = stops
+		}
+		if len(stops) >= minInt(limit, 4) {
+			return stops, nil
+		}
+	}
+
+	if len(lastStops) == 0 {
+		return nil, fmt.Errorf("no stops found")
+	}
+
+	return lastStops, nil
+}
+
+func (rp *RoutePlanner) resolveJourneyDate(requested time.Time) (time.Time, error) {
+	if rp.hasServiceOnDate(requested) {
+		return requested, nil
+	}
+
+	var minDate, maxDate time.Time
+	err := rp.db.QueryRow(`SELECT MIN(start_date), MAX(end_date) FROM calendar`).Scan(&minDate, &maxDate)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if requested.Before(minDate) {
+		for i := 0; i < 14; i++ {
+			candidate := minDate.AddDate(0, 0, i)
+			if rp.hasServiceOnDate(candidate) {
+				return candidate, nil
+			}
+		}
+	}
+
+	for i := 0; i < 14; i++ {
+		candidate := maxDate.AddDate(0, 0, -i)
+		if rp.hasServiceOnDate(candidate) {
+			return candidate, nil
+		}
+	}
+
+	return requested, nil
+}
+
+func (rp *RoutePlanner) hasServiceOnDate(date time.Time) bool {
+	var count int
+	dateStr := date.Format("2006-01-02")
+	query := `SELECT COUNT(*)
+	FROM calendar
+	WHERE start_date <= ?
+		AND end_date >= ?
+		AND (
+			(EXTRACT(DOW FROM ?::date) = 0 AND sunday = 1) OR
+			(EXTRACT(DOW FROM ?::date) = 1 AND monday = 1) OR
+			(EXTRACT(DOW FROM ?::date) = 2 AND tuesday = 1) OR
+			(EXTRACT(DOW FROM ?::date) = 3 AND wednesday = 1) OR
+			(EXTRACT(DOW FROM ?::date) = 4 AND thursday = 1) OR
+			(EXTRACT(DOW FROM ?::date) = 5 AND friday = 1) OR
+			(EXTRACT(DOW FROM ?::date) = 6 AND saturday = 1)
+		)`
+
+	if err := rp.db.QueryRow(query, dateStr, dateStr, dateStr, dateStr, dateStr, dateStr, dateStr, dateStr, dateStr).Scan(&count); err != nil {
+		return false
+	}
+
+	return count > 0
 }
 
 // findNearbyStopsWithModeMix finds nearby stops ensuring a mix of metro and bus stops
@@ -667,4 +1126,56 @@ func (rp *RoutePlanner) stopHasModeTypes(stopID string) (hasMetro, hasBus bool) 
 	}
 
 	return hasMetro, hasBus
+}
+
+func routeTypeToMode(routeType int) string {
+	if routeType == 1 {
+		return "metro"
+	}
+	return "bus"
+}
+
+func parseGTFSTimeOnDate(date time.Time, value string) (time.Time, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return time.Time{}, fmt.Errorf("invalid GTFS time %q", value)
+	}
+
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return time.Time{}, err
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return time.Time{}, err
+	}
+	second, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	dayOffset := hour / 24
+	hour = hour % 24
+
+	return time.Date(
+		date.Year(),
+		date.Month(),
+		date.Day(),
+		hour,
+		minute,
+		second,
+		0,
+		date.Location(),
+	).AddDate(0, 0, dayOffset), nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func sameCalendarDate(a, b time.Time) bool {
+	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
 }

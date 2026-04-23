@@ -31,8 +31,13 @@ func main() {
 		redisClient = nil
 	}
 
+	if err := services.EnsureAuthSchema(db); err != nil {
+		log.Fatalf("Failed to ensure auth schema: %v", err)
+	}
+
 	// Initialize services
 	userService := services.NewUserService(db)
+	authService := services.NewAuthService(db, userService, cfg.Auth)
 	stopService := services.NewStopService(db)
 	routeService := services.NewRouteService(db)
 	fareService := services.NewFareService(db)
@@ -53,6 +58,7 @@ func main() {
 
 	// Initialize handlers
 	userHandler := handlers.NewUserHandler(userService)
+	authHandler := handlers.NewAuthHandler(authService)
 	journeyHandler := handlers.NewJourneyHandler(routePlanner)
 	stopHandler := handlers.NewStopHandler(stopService)
 	routeHandler := handlers.NewRouteHandler(routeService)
@@ -70,6 +76,37 @@ func main() {
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
+		auth := v1.Group("/auth")
+		{
+			auth.POST("/google", authHandler.GoogleLogin)
+
+			authProtected := auth.Group("")
+			authProtected.Use(middleware.RequireAuth(authService))
+			authProtected.GET("/me", authHandler.Me)
+			authProtected.POST("/logout", authHandler.Logout)
+		}
+
+		protected := v1.Group("")
+		protected.Use(middleware.RequireAuth(authService))
+		protected.GET("/sessions/me/active", sessionHandler.GetActiveSessions)
+		protected.GET("/sessions/me", sessionHandler.ListMySessions)
+		protected.GET("/bills/me", billHandler.GetDailyBill)
+		protected.GET("/bills/me/pending", billHandler.GetPendingBills)
+		protected.POST("/sessions/checkin", sessionHandler.CheckIn)
+		protected.POST("/sessions/checkout", sessionHandler.CheckOut)
+		protected.POST("/boardings/board", boardingHandler.BoardRoute)
+		protected.POST("/boardings/auto-board", boardingHandler.AutoDetectAndBoard)
+		protected.POST("/boardings/alight", boardingHandler.AlightRoute)
+		protected.POST("/boardings/continuous-location", boardingHandler.UpdateContinuousLocation)
+		protected.POST("/boardings/tracking-heartbeat", boardingHandler.TrackingHeartbeat)
+		protected.GET("/boardings/sessions/:session_id", boardingHandler.GetSessionBoardings)
+		protected.GET("/boardings/sessions/:session_id/active", boardingHandler.GetActiveBoarding)
+		protected.GET("/bills/users/:user_id", billHandler.GetDailyBill)
+		protected.GET("/bills/users/:user_id/pending", billHandler.GetPendingBills)
+		protected.POST("/bills/:bill_id/pay", billHandler.PayBill)
+		protected.POST("/bills/generate", billHandler.GenerateDailyBills)
+		protected.GET("/sessions/users/:user_id/active", sessionHandler.GetActiveSessions)
+
 		// Users
 		users := v1.Group("/users")
 		{
@@ -127,31 +164,9 @@ func main() {
 		// Journey Sessions (Check-in/Check-out)
 		sessions := v1.Group("/sessions")
 		{
-			sessions.POST("/checkin", sessionHandler.CheckIn)
-			sessions.POST("/checkout", sessionHandler.CheckOut)
 			sessions.POST("/validate-qr", sessionHandler.ValidateQR) // Also records boarding
-			sessions.GET("/users/:user_id/active", sessionHandler.GetActiveSessions)
 		}
 
-		// Route Boardings (Track actual routes user takes)
-		boardings := v1.Group("/boardings")
-		{
-			boardings.POST("/board", boardingHandler.BoardRoute)                             // Record boarding a route (manual)
-			boardings.POST("/auto-board", boardingHandler.AutoDetectAndBoard)                // Auto-detect vehicle and board
-			boardings.POST("/alight", boardingHandler.AlightRoute)                           // Record alighting from route
-			boardings.POST("/continuous-location", boardingHandler.UpdateContinuousLocation) // Continuous location updates with auto-alighting
-			boardings.GET("/sessions/:session_id", boardingHandler.GetSessionBoardings)      // Get all boardings for session
-			boardings.GET("/sessions/:session_id/active", boardingHandler.GetActiveBoarding) // Get active boarding
-		}
-
-		// Daily Bills
-		bills := v1.Group("/bills")
-		{
-			bills.GET("/users/:user_id", billHandler.GetDailyBill)
-			bills.GET("/users/:user_id/pending", billHandler.GetPendingBills)
-			bills.POST("/:bill_id/pay", billHandler.PayBill)
-			bills.POST("/generate", billHandler.GenerateDailyBills) // Admin endpoint
-		}
 	}
 
 	// Health check

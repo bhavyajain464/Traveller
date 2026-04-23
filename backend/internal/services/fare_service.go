@@ -130,7 +130,7 @@ func (s *FareService) calculateLegFare(leg models.JourneyLeg, rules FareRules) f
 func (s *FareService) CalculateDistance(fromStopID, toStopID string) float64 {
 	query := `SELECT s1.stop_lat, s1.stop_lon, s2.stop_lat, s2.stop_lon
 		FROM stops s1
-		JOIN stops s2
+		CROSS JOIN stops s2
 		WHERE s1.stop_id = ? AND s2.stop_id = ?`
 
 	var lat1, lon1, lat2, lon2 float64
@@ -238,4 +238,3 @@ func containsIgnoreCase(s, substr string) bool {
 	substrLower := strings.ToLower(substr)
 	return strings.Contains(sLower, substrLower)
 }
-

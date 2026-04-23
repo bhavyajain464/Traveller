@@ -29,19 +29,29 @@ func NewJourneySessionService(db *database.DB, stopService *StopService, fareSer
 
 // CheckIn starts a new journey session and generates QR code
 func (s *JourneySessionService) CheckIn(req models.CheckInRequest) (*models.JourneySession, *models.QRCodeTicket, error) {
-	// Find nearest stop if not provided
+	if err := s.ensureNoPendingBills(req.UserID); err != nil {
+		return nil, nil, err
+	}
+
+	// Find nearest stop if not provided, but don't fail check-in if no stop is nearby.
 	stopID := req.StopID
 	if stopID == nil || *stopID == "" {
 		stops, err := s.stopService.FindNearby(req.Latitude, req.Longitude, 500, 1)
-		if err != nil || len(stops) == 0 {
-			return nil, nil, fmt.Errorf("no nearby stop found")
+		if err == nil && len(stops) > 0 {
+			stopID = &stops[0].ID
 		}
-		stopID = &stops[0].ID
 	}
 
 	// Generate QR code
 	sessionID := uuid.New().String()
 	qrCode := s.generateQRCode(sessionID, req.UserID)
+
+	checkInStopID := ""
+	var checkInStopValue any
+	if stopID != nil {
+		checkInStopID = *stopID
+		checkInStopValue = *stopID
+	}
 
 	// Create journey session
 	session := &models.JourneySession{
@@ -49,7 +59,7 @@ func (s *JourneySessionService) CheckIn(req models.CheckInRequest) (*models.Jour
 		UserID:        req.UserID,
 		QRCode:        qrCode,
 		CheckInTime:   time.Now(),
-		CheckInStopID: *stopID,
+		CheckInStopID: checkInStopID,
 		CheckInLat:    req.Latitude,
 		CheckInLon:    req.Longitude,
 		Status:        "active",
@@ -68,7 +78,7 @@ func (s *JourneySessionService) CheckIn(req models.CheckInRequest) (*models.Jour
 	routesJSON, _ := json.Marshal(session.RoutesUsed)
 	_, err := s.db.Exec(query,
 		session.ID, session.UserID, session.QRCode, session.CheckInTime,
-		session.CheckInStopID, session.CheckInLat, session.CheckInLon,
+		checkInStopValue, session.CheckInLat, session.CheckInLon,
 		session.Status, routesJSON, session.TotalDistance, session.TotalFare,
 		session.CreatedAt, session.UpdatedAt)
 	if err != nil {
@@ -81,7 +91,7 @@ func (s *JourneySessionService) CheckIn(req models.CheckInRequest) (*models.Jour
 		UserID:        req.UserID,
 		SessionID:     sessionID,
 		CheckInTime:   session.CheckInTime,
-		CheckInStopID: *stopID,
+		CheckInStopID: checkInStopID,
 		ExpiresAt:     session.CheckInTime.Add(24 * time.Hour), // Valid for 24 hours
 		IsValid:       true,
 	}
@@ -101,21 +111,20 @@ func (s *JourneySessionService) CheckOut(req models.CheckOutRequest, routeBoardi
 		return nil, fmt.Errorf("journey session is not active")
 	}
 
-	// Find nearest stop if not provided
+	// Find nearest stop if not provided. If we don't have one, continue with location-only checkout.
 	stopID := req.StopID
 	if stopID == nil || *stopID == "" {
 		stops, err := s.stopService.FindNearby(req.Latitude, req.Longitude, 500, 1)
-		if err != nil || len(stops) == 0 {
-			return nil, fmt.Errorf("no nearby stop found")
+		if err == nil && len(stops) > 0 {
+			stopID = &stops[0].ID
 		}
-		stopID = &stops[0].ID
 	}
 
 	// Check if user is still on a route (has active boarding)
 	// If yes, alight from that route first
 	if routeBoardingService != nil {
 		activeBoarding, err := routeBoardingService.GetActiveBoarding(session.ID)
-		if err == nil && activeBoarding != nil {
+		if err == nil && activeBoarding != nil && stopID != nil {
 			// Alight from current route
 			alightReq := models.AlightRouteRequest{
 				BoardingID:      activeBoarding.ID,
@@ -137,12 +146,15 @@ func (s *JourneySessionService) CheckOut(req models.CheckOutRequest, routeBoardi
 			session.TotalFare = totalFare
 			session.RoutesUsed = routesUsed
 		} else {
-			// Fallback: infer journey if no routes tracked
-			session.TotalDistance, session.TotalFare, session.RoutesUsed = s.inferJourneyDetails(session, req)
+			// Source of truth is tracked boardings/location flow.
+			session.TotalDistance = 0
+			session.TotalFare = 0
+			session.RoutesUsed = []string{}
 		}
 	} else {
-		// Fallback: infer journey if route boarding service not available
-		session.TotalDistance, session.TotalFare, session.RoutesUsed = s.inferJourneyDetails(session, req)
+		session.TotalDistance = 0
+		session.TotalFare = 0
+		session.RoutesUsed = []string{}
 	}
 
 	// Update session
@@ -229,13 +241,14 @@ func (s *JourneySessionService) GetSessionByQRCode(qrCode string) (*models.Journ
 
 	session := &models.JourneySession{}
 	var checkOutTime sql.NullTime
+	var checkInStopID sql.NullString
 	var checkOutStopID sql.NullString
 	var checkOutLat, checkOutLon sql.NullFloat64
 	var routesJSON string
 
 	err := s.db.QueryRow(query, qrCode).Scan(
 		&session.ID, &session.UserID, &session.QRCode,
-		&session.CheckInTime, &checkOutTime, &session.CheckInStopID, &checkOutStopID,
+		&session.CheckInTime, &checkOutTime, &checkInStopID, &checkOutStopID,
 		&session.CheckInLat, &session.CheckInLon, &checkOutLat, &checkOutLon,
 		&session.Status, &routesJSON, &session.TotalDistance, &session.TotalFare,
 		&session.CreatedAt, &session.UpdatedAt)
@@ -243,6 +256,9 @@ func (s *JourneySessionService) GetSessionByQRCode(qrCode string) (*models.Journ
 		return nil, fmt.Errorf("session not found: %w", err)
 	}
 
+	if checkInStopID.Valid {
+		session.CheckInStopID = checkInStopID.String
+	}
 	if checkOutTime.Valid {
 		t := checkOutTime.Time
 		session.CheckOutTime = &t
@@ -281,13 +297,14 @@ func (s *JourneySessionService) GetActiveSessions(userID string) ([]models.Journ
 	for rows.Next() {
 		session := models.JourneySession{}
 		var checkOutTime sql.NullTime
+		var checkInStopID sql.NullString
 		var checkOutStopID sql.NullString
 		var checkOutLat, checkOutLon sql.NullFloat64
 		var routesJSON string
 
 		err := rows.Scan(
 			&session.ID, &session.UserID, &session.QRCode,
-			&session.CheckInTime, &checkOutTime, &session.CheckInStopID, &checkOutStopID,
+			&session.CheckInTime, &checkOutTime, &checkInStopID, &checkOutStopID,
 			&session.CheckInLat, &session.CheckInLon, &checkOutLat, &checkOutLon,
 			&session.Status, &routesJSON, &session.TotalDistance, &session.TotalFare,
 			&session.CreatedAt, &session.UpdatedAt)
@@ -295,12 +312,89 @@ func (s *JourneySessionService) GetActiveSessions(userID string) ([]models.Journ
 			continue
 		}
 
+		if checkInStopID.Valid {
+			session.CheckInStopID = checkInStopID.String
+		}
 		if checkOutTime.Valid {
 			t := checkOutTime.Time
 			session.CheckOutTime = &t
 		}
 		json.Unmarshal([]byte(routesJSON), &session.RoutesUsed)
 
+		sessions = append(sessions, session)
+	}
+
+	return sessions, nil
+}
+
+// GetLatestActiveSession returns the most recent active session for a user, if any.
+func (s *JourneySessionService) GetLatestActiveSession(userID string) (*models.JourneySession, error) {
+	sessions, err := s.GetActiveSessions(userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	return &sessions[0], nil
+}
+
+// ListSessions returns the most recent sessions for a user, newest first.
+func (s *JourneySessionService) ListSessions(userID string, limit int) ([]models.JourneySession, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	query := `SELECT id, user_id, qr_code, check_in_time, check_out_time, check_in_stop_id, check_out_stop_id,
+		check_in_lat, check_in_lon, check_out_lat, check_out_lon, status, routes_used, total_distance, total_fare,
+		created_at, updated_at
+		FROM journey_sessions WHERE user_id = ? ORDER BY check_in_time DESC LIMIT ?`
+
+	rows, err := s.db.Query(query, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []models.JourneySession
+	for rows.Next() {
+		session := models.JourneySession{}
+		var checkOutTime sql.NullTime
+		var checkInStopID sql.NullString
+		var checkOutStopID sql.NullString
+		var checkOutLat, checkOutLon sql.NullFloat64
+		var routesJSON string
+
+		err := rows.Scan(
+			&session.ID, &session.UserID, &session.QRCode,
+			&session.CheckInTime, &checkOutTime, &checkInStopID, &checkOutStopID,
+			&session.CheckInLat, &session.CheckInLon, &checkOutLat, &checkOutLon,
+			&session.Status, &routesJSON, &session.TotalDistance, &session.TotalFare,
+			&session.CreatedAt, &session.UpdatedAt)
+		if err != nil {
+			continue
+		}
+
+		if checkInStopID.Valid {
+			session.CheckInStopID = checkInStopID.String
+		}
+		if checkOutTime.Valid {
+			t := checkOutTime.Time
+			session.CheckOutTime = &t
+		}
+		if checkOutStopID.Valid {
+			session.CheckOutStopID = &checkOutStopID.String
+		}
+		if checkOutLat.Valid {
+			lat := checkOutLat.Float64
+			session.CheckOutLat = &lat
+		}
+		if checkOutLon.Valid {
+			lon := checkOutLon.Float64
+			session.CheckOutLon = &lon
+		}
+
+		json.Unmarshal([]byte(routesJSON), &session.RoutesUsed)
 		sessions = append(sessions, session)
 	}
 
@@ -316,13 +410,14 @@ func (s *JourneySessionService) GetSessionByID(sessionID string) (*models.Journe
 
 	session := &models.JourneySession{}
 	var checkOutTime sql.NullTime
+	var checkInStopID sql.NullString
 	var checkOutStopID sql.NullString
 	var checkOutLat, checkOutLon sql.NullFloat64
 	var routesJSON string
 
 	err := s.db.QueryRow(query, sessionID).Scan(
 		&session.ID, &session.UserID, &session.QRCode,
-		&session.CheckInTime, &checkOutTime, &session.CheckInStopID, &checkOutStopID,
+		&session.CheckInTime, &checkOutTime, &checkInStopID, &checkOutStopID,
 		&session.CheckInLat, &session.CheckInLon, &checkOutLat, &checkOutLon,
 		&session.Status, &routesJSON, &session.TotalDistance, &session.TotalFare,
 		&session.CreatedAt, &session.UpdatedAt)
@@ -330,6 +425,9 @@ func (s *JourneySessionService) GetSessionByID(sessionID string) (*models.Journe
 		return nil, fmt.Errorf("session not found: %w", err)
 	}
 
+	if checkInStopID.Valid {
+		session.CheckInStopID = checkInStopID.String
+	}
 	if checkOutTime.Valid {
 		t := checkOutTime.Time
 		session.CheckOutTime = &t
@@ -417,6 +515,18 @@ func (s *JourneySessionService) updateDailyBill(userID string, journeyDate time.
 	now := time.Now()
 	_, err = s.db.Exec(upsertQuery, billID, userID, billDate, totalJourneys, totalDistance, totalFare, now, now)
 	return err
+}
+
+func (s *JourneySessionService) ensureNoPendingBills(userID string) error {
+	query := `SELECT COUNT(*) FROM daily_bills WHERE user_id = ? AND status = 'pending'`
+	var count int
+	if err := s.db.QueryRow(query, userID).Scan(&count); err != nil {
+		return fmt.Errorf("failed to check pending bills: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("payment required before starting a new journey")
+	}
+	return nil
 }
 
 // Helper functions

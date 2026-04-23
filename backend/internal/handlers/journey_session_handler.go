@@ -11,7 +11,7 @@ import (
 )
 
 type JourneySessionHandler struct {
-	sessionService      *services.JourneySessionService
+	sessionService       *services.JourneySessionService
 	routeBoardingService *services.RouteBoardingService
 }
 
@@ -24,16 +24,17 @@ func NewJourneySessionHandler(sessionService *services.JourneySessionService, ro
 
 // CheckIn handles check-in request and generates QR code
 func (h *JourneySessionHandler) CheckIn(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	var req models.CheckInRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-
-	if req.UserID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
-		return
-	}
+	req.UserID = authUser.ID
 
 	session, ticket, err := h.sessionService.CheckIn(req)
 	if err != nil {
@@ -42,44 +43,61 @@ func (h *JourneySessionHandler) CheckIn(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"session": session,
-		"qr_code": ticket.Code,
+		"session":   session,
+		"qr_code":   ticket.Code,
 		"qr_ticket": ticket,
-		"message": "Check-in successful. Show QR code to conductor.",
+		"message":   "Check-in successful. Show QR code to conductor.",
 	})
 }
 
 // CheckOut handles check-out request
 func (h *JourneySessionHandler) CheckOut(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	var req models.CheckOutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
+	var (
+		session *models.JourneySession
+		err     error
+	)
 	if req.SessionID == "" && req.QRCode == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id or qr_code is required"})
+		session, err = h.sessionService.GetLatestActiveSession(authUser.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve active session"})
+			return
+		}
+		if session == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no active session found for the authenticated user"})
+			return
+		}
+	} else if req.SessionID != "" {
+		session = userOwnsSession(c, h.sessionService, authUser.ID, req.SessionID)
+	} else {
+		session = userOwnsSessionByQRCode(c, h.sessionService, authUser.ID, req.QRCode)
+	}
+	if session == nil {
 		return
 	}
+	req.SessionID = session.ID
+	req.QRCode = session.QRCode
 
-	// Use QR code if session ID not provided
-	if req.SessionID == "" {
-		req.SessionID = req.QRCode
-	}
-	if req.QRCode == "" {
-		req.QRCode = req.SessionID
-	}
-
-	session, err := h.sessionService.CheckOut(req, h.routeBoardingService)
+	session, err = h.sessionService.CheckOut(req, h.routeBoardingService)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"session": session,
-		"message": "Check-out successful. Journey completed.",
-		"fare":    session.TotalFare,
+		"session":     session,
+		"message":     "Check-out successful. Journey completed.",
+		"fare":        session.TotalFare,
 		"routes_used": session.RoutesUsed,
 	})
 }
@@ -129,9 +147,9 @@ func (h *JourneySessionHandler) ValidateQR(c *gin.Context) {
 		}
 
 		boardReq := models.BoardRouteRequest{
-			QRCode:  req.QRCode,
-			RouteID: req.RouteID,
-			Latitude: lat,
+			QRCode:    req.QRCode,
+			RouteID:   req.RouteID,
+			Latitude:  lat,
 			Longitude: lon,
 		}
 
@@ -159,13 +177,17 @@ func (h *JourneySessionHandler) ValidateQR(c *gin.Context) {
 
 // GetActiveSessions returns active sessions for a user
 func (h *JourneySessionHandler) GetActiveSessions(c *gin.Context) {
-	userID := c.Param("user_id")
-	if userID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
 		return
 	}
 
-	sessions, err := h.sessionService.GetActiveSessions(userID)
+	if requestedUserID := c.Param("user_id"); requestedUserID != "" && requestedUserID != authUser.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "cannot access sessions for another user"})
+		return
+	}
+
+	sessions, err := h.sessionService.GetActiveSessions(authUser.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get active sessions"})
 		return
@@ -177,3 +199,28 @@ func (h *JourneySessionHandler) GetActiveSessions(c *gin.Context) {
 	})
 }
 
+// ListMySessions returns recent sessions for the authenticated user.
+func (h *JourneySessionHandler) ListMySessions(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
+	limit := 10
+	if rawLimit := c.Query("limit"); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 && parsed <= 50 {
+			limit = parsed
+		}
+	}
+
+	sessions, err := h.sessionService.ListSessions(authUser.ID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get sessions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"sessions": sessions,
+		"count":    len(sessions),
+	})
+}

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"indian-transit-backend/internal/models"
@@ -27,6 +28,11 @@ func NewRouteBoardingHandler(boardingService *services.RouteBoardingService, ses
 
 // BoardRoute records when user boards a route
 func (h *RouteBoardingHandler) BoardRoute(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	var req models.BoardRouteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -37,6 +43,13 @@ func (h *RouteBoardingHandler) BoardRoute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "route_id is required"})
 		return
 	}
+
+	session, _ := h.resolveOwnedSession(c, authUser.ID, req.SessionID, req.QRCode)
+	if session == nil {
+		return
+	}
+	req.SessionID = session.ID
+	req.QRCode = session.QRCode
 
 	boarding, err := h.boardingService.BoardRoute(req)
 	if err != nil {
@@ -52,6 +65,11 @@ func (h *RouteBoardingHandler) BoardRoute(c *gin.Context) {
 
 // AlightRoute records when user alights from a route
 func (h *RouteBoardingHandler) AlightRoute(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	var req models.AlightRouteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -63,7 +81,17 @@ func (h *RouteBoardingHandler) AlightRoute(c *gin.Context) {
 		return
 	}
 
-	boarding, err := h.boardingService.AlightRoute(req)
+	boarding, err := h.boardingService.GetBoardingByID(req.BoardingID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	session := userOwnsSession(c, h.sessionService, authUser.ID, boarding.SessionID)
+	if session == nil {
+		return
+	}
+
+	boarding, err = h.boardingService.AlightRoute(req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -78,9 +106,18 @@ func (h *RouteBoardingHandler) AlightRoute(c *gin.Context) {
 
 // GetSessionBoardings returns all route boardings for a session
 func (h *RouteBoardingHandler) GetSessionBoardings(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	if userOwnsSession(c, h.sessionService, authUser.ID, sessionID) == nil {
 		return
 	}
 
@@ -98,9 +135,18 @@ func (h *RouteBoardingHandler) GetSessionBoardings(c *gin.Context) {
 
 // GetActiveBoarding returns the currently active boarding for a session
 func (h *RouteBoardingHandler) GetActiveBoarding(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	if userOwnsSession(c, h.sessionService, authUser.ID, sessionID) == nil {
 		return
 	}
 
@@ -112,7 +158,7 @@ func (h *RouteBoardingHandler) GetActiveBoarding(c *gin.Context) {
 
 	if boarding == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"active": false,
+			"active":  false,
 			"message": "No active boarding",
 		})
 		return
@@ -126,30 +172,23 @@ func (h *RouteBoardingHandler) GetActiveBoarding(c *gin.Context) {
 
 // AutoDetectAndBoard automatically detects which vehicle user is on and records boarding
 func (h *RouteBoardingHandler) AutoDetectAndBoard(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	var req models.AutoBoardRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	// Use QR code if session ID not provided
-	sessionID := req.SessionID
-	if sessionID == "" && req.QRCode != "" {
-		// Get session by QR code
-		session, err := h.sessionService.GetSessionByQRCode(req.QRCode)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid QR code"})
-			return
-		}
-		sessionID = session.ID
-	}
-
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id or qr_code is required"})
+	session, _ := h.resolveOwnedSession(c, authUser.ID, req.SessionID, req.QRCode)
+	if session == nil {
 		return
 	}
 
-	boarding, match, err := h.boardingService.AutoDetectAndBoard(sessionID, req.Latitude, req.Longitude)
+	boarding, match, err := h.boardingService.AutoDetectAndBoard(session.ID, req.Latitude, req.Longitude)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -158,7 +197,7 @@ func (h *RouteBoardingHandler) AutoDetectAndBoard(c *gin.Context) {
 	// Reset auto-alight counter when a new boarding is created
 	// This ensures clean state for the new boarding
 	if h.autoAlightService != nil {
-		h.autoAlightService.ResetCounter(sessionID)
+		h.autoAlightService.ResetCounter(session.ID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -167,34 +206,29 @@ func (h *RouteBoardingHandler) AutoDetectAndBoard(c *gin.Context) {
 		"message":         "Vehicle detected and boarding recorded automatically",
 		"detected_route":  match.RouteID,
 		"detected_mode":   getModeName(match.RouteType),
-		"confidence":       match.Confidence,
+		"confidence":      match.Confidence,
 		"distance_meters": match.Distance,
 	})
 }
 
 // UpdateContinuousLocation handles continuous location updates and auto-detects alighting
 func (h *RouteBoardingHandler) UpdateContinuousLocation(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
 	var req models.ContinuousLocationUpdate
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	// Use QR code if session ID not provided
-	sessionID := req.SessionID
-	if sessionID == "" && req.QRCode != "" {
-		session, err := h.sessionService.GetSessionByQRCode(req.QRCode)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid QR code"})
-			return
-		}
-		sessionID = session.ID
-	}
-
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id or qr_code is required"})
+	session, _ := h.resolveOwnedSession(c, authUser.ID, req.SessionID, req.QRCode)
+	if session == nil {
 		return
 	}
+	sessionID := session.ID
 
 	// Check for automatic alighting
 	alightedBoarding, err := h.autoAlightService.CheckAndAlight(sessionID, req.Latitude, req.Longitude)
@@ -206,10 +240,10 @@ func (h *RouteBoardingHandler) UpdateContinuousLocation(c *gin.Context) {
 	if alightedBoarding != nil {
 		// User was automatically alighted
 		c.JSON(http.StatusOK, models.ContinuousLocationResponse{
-			OnVehicle:      false,
-			Alighted:       true,
+			OnVehicle:       false,
+			Alighted:        true,
 			AlightingStopID: alightedBoarding.AlightingStopID,
-			Message:        "Automatically alighted at stop",
+			Message:         "Automatically alighted at stop",
 		})
 		return
 	}
@@ -246,7 +280,7 @@ func (h *RouteBoardingHandler) UpdateContinuousLocation(c *gin.Context) {
 					})
 					return
 				}
-				
+
 				// Before vehicles move or if exact match unavailable, use basic verification
 				c.JSON(http.StatusOK, models.ContinuousLocationResponse{
 					OnVehicle:      true,
@@ -273,7 +307,7 @@ func (h *RouteBoardingHandler) UpdateContinuousLocation(c *gin.Context) {
 					})
 					return
 				}
-				
+
 				// User is not on any vehicle
 				c.JSON(http.StatusOK, models.ContinuousLocationResponse{
 					OnVehicle:      false,
@@ -287,20 +321,126 @@ func (h *RouteBoardingHandler) UpdateContinuousLocation(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	// No vehicle ID or error
 	c.JSON(http.StatusOK, models.ContinuousLocationResponse{
 		OnVehicle: false,
 		Alighted:  false,
 		Message:   "No active boarding or vehicle tracking unavailable",
 	})
+}
 
-	c.JSON(http.StatusOK, models.ContinuousLocationResponse{
-		OnVehicle: true,
-		RouteID:   &activeBoarding.RouteID,
-		Alighted:  false,
-		Message:   "Active boarding, vehicle tracking unavailable",
-	})
+// TrackingHeartbeat handles the rider-facing tracking loop in a single call.
+func (h *RouteBoardingHandler) TrackingHeartbeat(c *gin.Context) {
+	authUser := requireAuthenticatedUser(c)
+	if authUser == nil {
+		return
+	}
+
+	var req models.ContinuousLocationUpdate
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	session, _ := h.resolveOwnedSession(c, authUser.ID, req.SessionID, req.QRCode)
+	if session == nil {
+		return
+	}
+	sessionID := session.ID
+	if session.Status != "active" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "journey session is not active"})
+		return
+	}
+
+	activeBoarding, err := h.boardingService.GetActiveBoarding(sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get active boarding"})
+		return
+	}
+
+	autoBoarded := false
+	alighted := false
+	message := "Tracking is active and waiting for a boarding match."
+	var distance float64
+
+	if activeBoarding == nil {
+		boarding, match, autoBoardErr := h.boardingService.AutoDetectAndBoard(sessionID, req.Latitude, req.Longitude)
+		if autoBoardErr == nil {
+			activeBoarding = boarding
+			autoBoarded = true
+			message = fmt.Sprintf("Tracking linked your ticket to route %s.", match.RouteID)
+			distance = match.Distance
+			if h.autoAlightService != nil {
+				h.autoAlightService.ResetCounter(sessionID)
+			}
+		} else if !isExpectedTrackingMiss(autoBoardErr) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": autoBoardErr.Error()})
+			return
+		}
+	}
+
+	if activeBoarding != nil && !autoBoarded && h.autoAlightService != nil {
+		alightedBoarding, autoAlightErr := h.autoAlightService.CheckAndAlight(sessionID, req.Latitude, req.Longitude)
+		if autoAlightErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": autoAlightErr.Error()})
+			return
+		}
+		if alightedBoarding != nil {
+			alighted = true
+			activeBoarding = nil
+			message = "Ride segment ended automatically near a stop."
+		}
+	}
+
+	activeBoarding, err = h.boardingService.GetActiveBoarding(sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh active boarding"})
+		return
+	}
+
+	boardings, err := h.boardingService.GetBoardingsForSession(sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get boardings"})
+		return
+	}
+
+	response := models.TrackingHeartbeatResponse{
+		SessionID:      sessionID,
+		AutoBoarded:    autoBoarded,
+		Alighted:       alighted,
+		TrackingState:  trackingStateFor(activeBoarding, boardings),
+		Message:        message,
+		Boardings:      boardings,
+		ActiveBoarding: activeBoarding,
+		DistanceMeters: distance,
+	}
+
+	if activeBoarding != nil {
+		response.RouteID = &activeBoarding.RouteID
+		response.VehicleID = activeBoarding.VehicleID
+		response.OnVehicle = true
+
+		if activeBoarding.VehicleID != nil && h.vehicleLocationService != nil {
+			isOnVehicle, verifyDistance, verifyErr := h.vehicleLocationService.VerifyUserOnVehicle(*activeBoarding.VehicleID, req.Latitude, req.Longitude)
+			if verifyErr == nil {
+				response.OnVehicle = isOnVehicle
+				response.DistanceMeters = verifyDistance
+				if isOnVehicle {
+					response.Message = fmt.Sprintf("Tracking confirms you are on route %s.", activeBoarding.RouteID)
+				} else {
+					response.Message = fmt.Sprintf("Ticket is still open on route %s, but the latest location drifted away from the vehicle.", activeBoarding.RouteID)
+				}
+			}
+		}
+	} else {
+		response.OnVehicle = false
+		if len(boardings) > 0 && !alighted {
+			response.Message = "Previous ride segment is closed. Tracking is waiting for the next boarding."
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // Helper function to get mode name
@@ -317,3 +457,55 @@ func getModeName(routeType int) string {
 	}
 }
 
+func (h *RouteBoardingHandler) resolveOwnedSession(c *gin.Context, userID, sessionID, qrCode string) (*models.JourneySession, error) {
+	if sessionID != "" {
+		session := userOwnsSession(c, h.sessionService, userID, sessionID)
+		if session == nil {
+			return nil, fmt.Errorf("session ownership validation failed")
+		}
+		return session, nil
+	}
+	if qrCode == "" {
+		session, err := h.sessionService.GetLatestActiveSession(userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve active session"})
+			return nil, fmt.Errorf("failed to resolve active session")
+		}
+		if session == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no active session found for the authenticated user"})
+			return nil, fmt.Errorf("no active session found")
+		}
+		return session, nil
+	}
+
+	session := userOwnsSessionByQRCode(c, h.sessionService, userID, qrCode)
+	if session == nil {
+		return nil, fmt.Errorf("session ownership validation failed")
+	}
+	return session, nil
+}
+
+func isExpectedTrackingMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "could not detect transport mode") ||
+		strings.Contains(message, "no nearby vehicles found") ||
+		strings.Contains(message, "low confidence match") ||
+		strings.Contains(message, "no nearby stop found")
+}
+
+func trackingStateFor(activeBoarding *models.RouteBoarding, boardings []models.RouteBoarding) string {
+	if activeBoarding != nil && len(boardings) > 1 {
+		return "transferred"
+	}
+	if activeBoarding != nil {
+		return "on_vehicle"
+	}
+	if len(boardings) > 0 {
+		return "ride_ended"
+	}
+	return "checked_in"
+}

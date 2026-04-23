@@ -11,45 +11,120 @@ import {
   saveActiveSession
 } from "../lib/tickets";
 
+const DELHI_FALLBACK_COORDS = {
+  latitude: Number(import.meta.env.VITE_DELHI_FALLBACK_LAT || 28.632896),
+  longitude: Number(import.meta.env.VITE_DELHI_FALLBACK_LON || 77.219574)
+};
+
+const FORCE_DELHI_LOCATION = import.meta.env.VITE_FORCE_DELHI_LOCATION === "true";
+const TRACKING_POLL_MS = 15000;
+
 function TicketsPage() {
   const { user } = useAuth();
   const activeJourney = getActiveJourney();
   const [activeSession, setActiveSession] = useState(() => getActiveSession());
+  const [boardings, setBoardings] = useState([]);
+  const [activeBoarding, setActiveBoarding] = useState(null);
+  const [pendingBills, setPendingBills] = useState([]);
+  const [trackingMessage, setTrackingMessage] = useState("");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
 
   useEffect(() => {
     let ignore = false;
 
-    async function loadActiveSession() {
+    async function loadPageState() {
       if (!user?.id) {
         return;
       }
 
       try {
-        const payload = await apiRequest(`/sessions/users/${encodeURIComponent(user.id)}/active`);
+        const [sessionPayload, billsPayload] = await Promise.all([
+          apiRequest("/sessions/me/active"),
+          apiRequest("/bills/me/pending")
+        ]);
+
         if (ignore) {
           return;
         }
-        const session = payload.sessions?.[0];
-        if (session) {
-          const hydrated = toSessionState(session);
-          saveActiveSession(hydrated);
-          setActiveSession(hydrated);
-        } else {
+
+        const session = sessionPayload.sessions?.[0];
+        setPendingBills(billsPayload.bills || []);
+
+        if (!session) {
           clearActiveSession();
           setActiveSession(null);
+          setBoardings([]);
+          setActiveBoarding(null);
+          return;
         }
+
+        const hydrated = toSessionState(session);
+        saveActiveSession(hydrated);
+        setActiveSession(hydrated);
+        await refreshBoardingState(hydrated.id, ignore);
       } catch {
-        // Keep the locally stored state if the refresh fails.
+        // Preserve local state if the refresh fails.
       }
     }
 
-    loadActiveSession();
+    loadPageState();
     return () => {
       ignore = true;
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    if (!activeSession?.id) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function runTrackingTick() {
+      const position = await getCurrentPosition();
+
+      try {
+        const heartbeat = await apiRequest("/boardings/tracking-heartbeat", {
+          method: "POST",
+          body: JSON.stringify({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            timestamp: new Date().toISOString()
+          })
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        setBoardings(heartbeat.boardings || []);
+        setActiveBoarding(heartbeat.active_boarding || null);
+        setTrackingMessage(heartbeat.message || "");
+      } catch {
+        // Leave the last good tracking state in place if background sync fails.
+      }
+    }
+
+    runTrackingTick();
+    const intervalID = window.setInterval(runTrackingTick, TRACKING_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalID);
+    };
+  }, [activeSession?.id]);
+
+  async function refreshBoardingState(sessionID, ignore = false) {
+    const snapshot = await getBoardingSnapshot(sessionID);
+    if (ignore) {
+      return snapshot;
+    }
+
+    setBoardings(snapshot.boardings);
+    setActiveBoarding(snapshot.activeBoarding);
+    return snapshot;
+  }
 
   async function checkIn() {
     try {
@@ -59,7 +134,6 @@ function TicketsPage() {
       const payload = await apiRequest("/sessions/checkin", {
         method: "POST",
         body: JSON.stringify({
-          user_id: user.id,
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           stop_id: activeJourney?.fromStopID || undefined
@@ -69,8 +143,13 @@ function TicketsPage() {
       const nextSession = toSessionState(payload.session, payload.qr_code);
       saveActiveSession(nextSession);
       setActiveSession(nextSession);
+      setBoardings([]);
+      setActiveBoarding(null);
+      setTrackingMessage("Ticket is active. Tracking is now watching for your next boarding.");
+      await refreshPendingBills();
     } catch (checkInError) {
       setError(checkInError.message || "Check-in failed.");
+      await refreshPendingBills();
     } finally {
       setBusyAction("");
     }
@@ -88,8 +167,6 @@ function TicketsPage() {
       await apiRequest("/sessions/checkout", {
         method: "POST",
         body: JSON.stringify({
-          session_id: activeSession.id,
-          qr_code: activeSession.qrCode,
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           stop_id: activeJourney?.toStopID || undefined
@@ -99,6 +176,10 @@ function TicketsPage() {
       clearActiveSession();
       clearActiveJourney();
       setActiveSession(null);
+      setBoardings([]);
+      setActiveBoarding(null);
+      setTrackingMessage("");
+      await refreshPendingBills();
     } catch (checkOutError) {
       setError(checkOutError.message || "Check-out failed.");
     } finally {
@@ -106,23 +187,70 @@ function TicketsPage() {
     }
   }
 
+  async function refreshPendingBills() {
+    if (!user?.id) {
+      return;
+    }
+
+    try {
+      const payload = await apiRequest("/bills/me/pending");
+      setPendingBills(payload.bills || []);
+    } catch {
+      // Ignore billing refresh errors on the rider page.
+    }
+  }
+
+  const trackingState = getTrackingState({
+    activeSession,
+    activeBoarding,
+    boardings,
+    pendingBills
+  });
+
   return (
     <section className="route-page">
       <div className="page-header">
         <div>
           <h2>Tickets</h2>
           <p className="lead">
-            Your live QR is created when you check in. It includes the session tied to your time and location, and it disappears when you check out.
+            Your QR ticket stays active for inspection while background tracking determines the boardings that feed billing.
           </p>
         </div>
       </div>
 
       {error ? <section className="card"><p className="status-error">{error}</p></section> : null}
 
+      {pendingBills.length > 0 && !activeSession ? (
+        <section className="card selected-card">
+          <p className="eyebrow">Billing Gate</p>
+          <h3>Today&apos;s bill pending</h3>
+          <p className="lead">
+            New travel is blocked until the outstanding daily bill is paid.
+          </p>
+          <div className="route-meta-grid">
+            <div>
+              <strong>{pendingBills.length}</strong>
+              <span>Pending bill{pendingBills.length === 1 ? "" : "s"}</span>
+            </div>
+            <div>
+              <strong>{formatCurrency(sumPendingBills(pendingBills))}</strong>
+              <span>Outstanding total</span>
+            </div>
+          </div>
+          <div className="hero-actions">
+            <Link className="primary-link" to="/bills">Review bills</Link>
+            <Link className="secondary-link" to="/profile">Open profile</Link>
+          </div>
+        </section>
+      ) : null}
+
       {activeSession ? (
-        <section className="card ticket-card full-ticket-card">
+        <section className="card ticket-card full-ticket-card tracking-ticket-card">
           <div className="section-heading">
-            <h3>Live travel QR</h3>
+            <div>
+              <p className="eyebrow">Active Ticket</p>
+              <h3>{trackingState.label}</h3>
+            </div>
             <button
               type="button"
               className="ghost-button"
@@ -135,28 +263,73 @@ function TicketsPage() {
             </button>
           </div>
 
-          <div className="ticket-preview">
-            <QRCodePreview value={activeSession.qrCode} size={260} />
+          <div className="tracking-status-banner">
+            <strong>{trackingState.label}</strong>
+            <span>{trackingState.description}</span>
+          </div>
+
+          <div className="ticket-preview tracking-ticket-preview">
             <div className="ticket-copy">
-              <p className="eyebrow">Active until checkout</p>
+              <p className="eyebrow">Session-linked QR</p>
               <strong>{user?.name}</strong>
               <p>{activeSession.checkInTimeLabel}</p>
               <p>{activeSession.checkInLocationLabel}</p>
               <p className="status-muted">Session ID: {activeSession.id}</p>
+              {trackingMessage ? <p className="status-muted">{trackingMessage}</p> : null}
+            </div>
+
+            <div className="tracking-qr-panel">
+              <QRCodePreview value={activeSession.qrCode} size={220} />
+              <p className="status-muted">Show this QR to inspectors while tracking runs in the background.</p>
             </div>
           </div>
 
+          <div className="route-meta-grid">
+            <div>
+              <strong>{boardings.length}</strong>
+              <span>Total tracked segments</span>
+            </div>
+            <div>
+              <strong>{activeBoarding?.RouteID || "Waiting"}</strong>
+              <span>Current route</span>
+            </div>
+            <div>
+              <strong>{activeBoarding?.VehicleID || "No vehicle yet"}</strong>
+              <span>Current vehicle</span>
+            </div>
+          </div>
+
+          {boardings.length > 0 ? (
+            <div className="tracking-segment-list">
+              {boardings.map((boarding, index) => (
+                <div key={boarding.id} className="tracking-segment-item">
+                  <strong>Segment {index + 1}: {boarding.route_id}</strong>
+                  <span>
+                    Boarded {formatDateTime(boarding.boarding_time)}
+                    {boarding.alighting_time ? `, alighted ${formatDateTime(boarding.alighting_time)}` : ", currently active"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="status-muted">
+              No vehicle matched yet. The ticket is live and tracking will attach boardings as movement data arrives.
+            </p>
+          )}
+
           <div className="toolbar">
             <button type="button" className="primary-button" disabled={busyAction === "checkout"} onClick={checkOut}>
-              {busyAction === "checkout" ? "Checking out..." : "Check Out And Destroy QR"}
+              {busyAction === "checkout" ? "Ending tracking..." : "End Tracking And Close Ticket"}
             </button>
+            <Link className="secondary-link" to="/plan">Plan a trip</Link>
+            <Link className="secondary-link" to="/departures">Browse departures</Link>
           </div>
         </section>
       ) : (
         <section className="card empty-state-card">
-          <h3>No live QR yet</h3>
+          <h3>No active ticket yet</h3>
           <p className="lead">
-            Check in to create a live QR using your current time and location. That QR should exist only while the journey session is active.
+            Start tracking once, get a QR ticket for inspection, and let boardings and alightings drive billing in the background.
           </p>
           {activeJourney ? (
             <p className="status-muted">
@@ -164,8 +337,13 @@ function TicketsPage() {
             </p>
           ) : null}
           <div className="hero-actions">
-            <button type="button" className="primary-button" disabled={busyAction === "checkin"} onClick={checkIn}>
-              {busyAction === "checkin" ? "Checking in..." : "Check In And Generate QR"}
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busyAction === "checkin" || pendingBills.length > 0}
+              onClick={checkIn}
+            >
+              {busyAction === "checkin" ? "Starting tracking..." : "Start Tracking And Generate Ticket"}
             </button>
             <Link className="secondary-link" to="/plan">Plan a trip</Link>
             <Link className="secondary-link" to="/departures">Browse departures</Link>
@@ -176,6 +354,60 @@ function TicketsPage() {
   );
 }
 
+async function getBoardingSnapshot(sessionID) {
+  const [boardingsPayload, activePayload] = await Promise.all([
+    apiRequest(`/boardings/sessions/${encodeURIComponent(sessionID)}`),
+    apiRequest(`/boardings/sessions/${encodeURIComponent(sessionID)}/active`)
+  ]);
+
+  return {
+    boardings: boardingsPayload.boardings || [],
+    activeBoarding: activePayload.active ? activePayload.boarding : null
+  };
+}
+
+function getTrackingState({ activeSession, activeBoarding, boardings, pendingBills }) {
+  if (!activeSession && pendingBills.length > 0) {
+    return {
+      label: "Today's bill pending",
+      description: "Settle your unpaid daily bill before starting the next travel day."
+    };
+  }
+
+  if (!activeSession) {
+    return {
+      label: "Ready",
+      description: "Start tracking when you begin moving."
+    };
+  }
+
+  if (activeBoarding && boardings.length > 1) {
+    return {
+      label: "Transferred",
+      description: "Your QR is still valid and tracking has linked more than one segment to this session."
+    };
+  }
+
+  if (activeBoarding) {
+    return {
+      label: "On vehicle",
+      description: `Tracking is attached to route ${activeBoarding.RouteID} for billing.`
+    };
+  }
+
+  if (boardings.length > 0) {
+    return {
+      label: "Ride ended",
+      description: "Your last segment has ended. Stay checked in if you expect another transfer."
+    };
+  }
+
+  return {
+    label: "Checked in",
+    description: "Your QR ticket is live and tracking is waiting for the first boarding match."
+  };
+}
+
 function toSessionState(session, qrCodeOverride) {
   return {
     id: session.id,
@@ -184,18 +416,59 @@ function toSessionState(session, qrCodeOverride) {
     checkInLocationLabel: `${Number(session.check_in_lat).toFixed(5)}, ${Number(session.check_in_lon).toFixed(5)}`
   };
 }
+function sumPendingBills(bills) {
+  return bills.reduce((total, bill) => total + Number(bill.total_fare || 0), 0);
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2
+  }).format(value || 0);
+}
+
+function formatDateTime(value) {
+  return new Date(value).toLocaleString();
+}
 
 function getCurrentPosition() {
-  return new Promise((resolve, reject) => {
+  if (FORCE_DELHI_LOCATION) {
+    return Promise.resolve(createPosition(DELHI_FALLBACK_COORDS.latitude, DELHI_FALLBACK_COORDS.longitude));
+  }
+
+  return new Promise((resolve) => {
     if (!navigator.geolocation) {
-      reject(new Error("Geolocation is not available in this browser."));
+      resolve(createPosition(DELHI_FALLBACK_COORDS.latitude, DELHI_FALLBACK_COORDS.longitude));
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(resolve, () => {
-      reject(new Error("Location permission is required to check in or out."));
+    navigator.geolocation.getCurrentPosition((position) => {
+      const coords = position.coords;
+
+      if (isWithinDelhi(coords.latitude, coords.longitude)) {
+        resolve(position);
+        return;
+      }
+
+      resolve(createPosition(DELHI_FALLBACK_COORDS.latitude, DELHI_FALLBACK_COORDS.longitude));
+    }, () => {
+      resolve(createPosition(DELHI_FALLBACK_COORDS.latitude, DELHI_FALLBACK_COORDS.longitude));
     }, { enableHighAccuracy: true, timeout: 10000 });
   });
+}
+
+function createPosition(latitude, longitude) {
+  return {
+    coords: {
+      latitude,
+      longitude
+    }
+  };
+}
+
+function isWithinDelhi(latitude, longitude) {
+  return latitude >= 28.4 && latitude <= 28.95 && longitude >= 76.8 && longitude <= 77.45;
 }
 
 export default TicketsPage;

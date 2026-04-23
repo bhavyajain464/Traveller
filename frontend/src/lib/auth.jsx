@@ -1,67 +1,97 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { apiRequest } from "./api";
+import { apiRequest, clearAuthToken, getAuthToken, setAuthToken } from "./api";
 
-const STORAGE_KEY = "traveller.auth.user";
 const AuthContext = createContext(null);
 
-function readStoredUser() {
-  try {
-    const value = window.localStorage.getItem(STORAGE_KEY);
-    return value ? JSON.parse(value) : null;
-  } catch {
+function mapUser(user) {
+  if (!user) {
     return null;
   }
+
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email || "",
+    phone: user.phone_number || "",
+    avatarUrl: user.avatar_url || "",
+    authProvider: user.auth_provider || "unknown"
+  };
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => readStoredUser());
+  const [user, setUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(() => Boolean(getAuthToken()));
 
   useEffect(() => {
-    if (!user) {
-      window.localStorage.removeItem(STORAGE_KEY);
-      return;
+    let ignore = false;
+
+    async function hydrateUser() {
+      const token = getAuthToken();
+      if (!token) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const payload = await apiRequest("/auth/me");
+        if (!ignore) {
+          setUser(mapUser(payload.user));
+        }
+      } catch {
+        clearAuthToken();
+        if (!ignore) {
+          setUser(null);
+        }
+      } finally {
+        if (!ignore) {
+          setIsLoading(false);
+        }
+      }
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-  }, [user]);
+    hydrateUser();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
-  const login = async ({ name, phone }) => {
-    const normalizedPhone = phone.trim();
-    const trimmedName = name.trim();
-    let nextUser;
+  const loginWithGoogle = async (credential) => {
+    const payload = await apiRequest("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ credential })
+    });
 
-    try {
-      const existing = await apiRequest(`/users/phone/${encodeURIComponent(normalizedPhone)}`);
-      nextUser = {
-        id: existing.user.id,
-        name: existing.user.name,
-        phone: existing.user.phone_number
-      };
-    } catch (error) {
-      const created = await apiRequest("/users", {
-        method: "POST",
-        body: JSON.stringify({
-          phone_number: normalizedPhone,
-          name: trimmedName
-        })
-      });
-      nextUser = {
-        id: created.user.id,
-        name: created.user.name,
-        phone: created.user.phone_number
-      };
-    }
-
+    setAuthToken(payload.token);
+    const nextUser = mapUser(payload.user);
     setUser(nextUser);
+    setIsLoading(false);
     return nextUser;
   };
 
-  const logout = () => {
-    setUser(null);
+  const logout = async () => {
+    try {
+      if (getAuthToken()) {
+        await apiRequest("/auth/logout", { method: "POST" });
+      }
+    } catch {
+      // Clear local auth even if the server-side session is already gone.
+    } finally {
+      clearAuthToken();
+      setUser(null);
+      setIsLoading(false);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: Boolean(user), login, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isAuthenticated: Boolean(user),
+        isLoading,
+        loginWithGoogle,
+        logout
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

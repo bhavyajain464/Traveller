@@ -318,6 +318,141 @@ button:hover {
   color: #64748b;
 }
 
+.status-error {
+  color: #b42318;
+  margin: 0;
+}
+
+.status-success {
+  color: #047857;
+  margin: 0;
+}
+
+.ticket-preview {
+  display: grid;
+  gap: 1rem;
+  align-items: start;
+}
+
+.tracking-ticket-preview {
+  grid-template-columns: minmax(0, 1fr) 260px;
+}
+
+.tracking-qr-panel {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, #fffdf7 0%, #f8fbff 100%);
+  border: 1px solid #e6edf5;
+}
+
+.tracking-status-banner {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  border-radius: 0.9rem;
+  background: linear-gradient(135deg, #effaf5 0%, #eef6ff 100%);
+  border: 1px solid #cfe1d5;
+}
+
+.tracking-status-banner strong {
+  font-size: 1rem;
+}
+
+.tracking-status-banner span {
+  color: #526171;
+}
+
+.tracking-segment-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.tracking-segment-item {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.9rem;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.tracking-segment-item span {
+  color: #64748b;
+}
+
+.bills-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.bill-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  border: 1px solid #d8e3ee;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.session-timeline {
+  display: grid;
+  gap: 1rem;
+}
+
+.session-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  border: 1px solid #d8e3ee;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.session-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+}
+
+.session-card-header h3 {
+  margin: 0;
+}
+
+.bill-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+}
+
+.bill-card-header h3 {
+  margin: 0;
+}
+
+.bill-amount {
+  font-size: 1.3rem;
+  color: #0f3f36;
+}
+
+.empty-bills-state {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+@media (max-width: 900px) {
+  .tracking-ticket-preview {
+    grid-template-columns: 1fr;
+  }
+}
+
 .route-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

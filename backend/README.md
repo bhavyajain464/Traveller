@@ -70,11 +70,17 @@ export REDIS_PORT=6379
 export REDIS_PASSWORD=
 export REDIS_DB=0
 
+# Auth
+export GOOGLE_CLIENT_ID=
+export SESSION_TOKEN_SECRET=change-me
+export SESSION_DURATION_HOURS=720
+
 # GTFS Data
 export GTFS_DATA_PATH=../DMRC_GTFS
 ```
 
 `DATABASE_URL` (if set) takes precedence over the individual `DB_*` variables. This backend expects **PostgreSQL/PostGIS**.
+When running locally, the backend also auto-loads `.env`, `.env.local`, `backend/.env`, and `backend/.env.local` if present.
 
 ## Running the Server
 
@@ -95,6 +101,13 @@ This runs daily at 1 AM to generate bills for the previous day. Can also be trig
 ## API Endpoints
 
 ### Check-In/Check-Out (Core Feature)
+
+### Authentication
+
+- `POST /api/v1/auth/google` - Exchange a Google ID token for a Traveller session
+  - Body: `{credential}`
+- `GET /api/v1/auth/me` - Resolve the current user from the bearer token
+- `POST /api/v1/auth/logout` - Revoke the current bearer token
 
 - `POST /api/v1/sessions/checkin` - Check-in and generate QR code
   - Body: `{user_id, latitude, longitude, stop_id?}`

@@ -107,6 +107,42 @@ func (s *DailyBillService) GetPendingBills(userID string) ([]models.DailyBill, e
 	return bills, nil
 }
 
+// GetBillByID retrieves a bill by ID.
+func (s *DailyBillService) GetBillByID(billID string) (*models.DailyBill, error) {
+	query := `SELECT id, user_id, bill_date, total_journeys, total_distance, total_fare, status,
+		payment_id, payment_method, paid_at, created_at, updated_at
+		FROM daily_bills WHERE id = ?`
+
+	bill := &models.DailyBill{}
+	var paymentID, paymentMethod sql.NullString
+	var paidAt sql.NullTime
+
+	err := s.db.QueryRow(query, billID).Scan(
+		&bill.ID, &bill.UserID, &bill.BillDate,
+		&bill.TotalJourneys, &bill.TotalDistance, &bill.TotalFare,
+		&bill.Status, &paymentID, &paymentMethod, &paidAt,
+		&bill.CreatedAt, &bill.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("bill not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bill: %w", err)
+	}
+
+	if paymentID.Valid {
+		bill.PaymentID = &paymentID.String
+	}
+	if paymentMethod.Valid {
+		bill.PaymentMethod = &paymentMethod.String
+	}
+	if paidAt.Valid {
+		bill.PaidAt = &paidAt.Time
+	}
+
+	return bill, nil
+}
+
 // MarkBillAsPaid marks a bill as paid
 func (s *DailyBillService) MarkBillAsPaid(billID string, paymentID string, paymentMethod string) error {
 	query := `UPDATE daily_bills SET
@@ -229,13 +265,14 @@ func (s *DailyBillService) getJourneysForBill(userID string, billDate time.Time)
 	for rows.Next() {
 		session := models.JourneySession{}
 		var checkOutTime sql.NullTime
+		var checkInStopID sql.NullString
 		var checkOutStopID sql.NullString
 		var checkOutLat, checkOutLon sql.NullFloat64
 		var routesJSON string
 
 		err := rows.Scan(
 			&session.ID, &session.UserID, &session.QRCode,
-			&session.CheckInTime, &checkOutTime, &session.CheckInStopID, &checkOutStopID,
+			&session.CheckInTime, &checkOutTime, &checkInStopID, &checkOutStopID,
 			&session.CheckInLat, &session.CheckInLon, &checkOutLat, &checkOutLon,
 			&session.Status, &routesJSON, &session.TotalDistance, &session.TotalFare,
 			&session.CreatedAt, &session.UpdatedAt)
@@ -243,6 +280,9 @@ func (s *DailyBillService) getJourneysForBill(userID string, billDate time.Time)
 			continue
 		}
 
+		if checkInStopID.Valid {
+			session.CheckInStopID = checkInStopID.String
+		}
 		if checkOutTime.Valid {
 			t := checkOutTime.Time
 			session.CheckOutTime = &t
