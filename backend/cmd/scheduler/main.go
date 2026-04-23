@@ -14,14 +14,7 @@ func main() {
 	cfg := config.Load()
 
 	// Initialize database
-	db, err := database.New(
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
-	)
+	db, err := database.NewFromConfig(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}

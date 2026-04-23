@@ -6,17 +6,17 @@ A Go-based backend service for **Traveller** - an Indian public transport app si
 
 - **Check-In/Check-Out System**: QR code-based journey tracking
 - **Daily Billing**: Automatic aggregation of all journeys per day
-- **GTFS Data Processing**: Parse and load GTFS feeds into PostgreSQL with PostGIS
+- **GTFS Data Processing**: Parse and load GTFS feeds into PostgreSQL/PostGIS
 - **Journey Planning**: Point-to-point route planning with transfers
 - **Multi-Modal Support**: Support for multiple transport agencies (buses, metro, trains)
 - **Real-time Information**: GTFS-RT support with Redis caching
-- **Geospatial Queries**: Efficient location-based queries using PostGIS
+- **Geospatial Queries**: Location-based queries using PostGIS
 - **REST API**: Comprehensive REST API for all transit data
 
 ## Prerequisites
 
 - Go 1.19 or higher
-- PostgreSQL 12+ with PostGIS extension
+- PostgreSQL 16 + PostGIS
 - Redis (optional, for caching and real-time data)
 
 ## Installation
@@ -31,29 +31,19 @@ cd backend
 go mod download
 ```
 
-3. Set up PostgreSQL database:
+3. Start PostgreSQL/PostGIS and Redis with Docker:
 ```bash
-createdb transit_db
-psql transit_db -c "CREATE EXTENSION postgis;"
+docker compose up -d postgres redis adminer
 ```
 
 4. Run migrations:
 ```bash
-# Run all migrations in order
-psql transit_db < migrations/001_create_agencies_table.up.sql
-psql transit_db < migrations/002_create_routes_table.up.sql
-psql transit_db < migrations/003_create_stops_table.up.sql
-psql transit_db < migrations/004_create_calendar_table.up.sql
-psql transit_db < migrations/005_create_trips_table.up.sql
-psql transit_db < migrations/006_create_stop_times_table.up.sql
-psql transit_db < migrations/007_create_users_table.up.sql
-psql transit_db < migrations/008_create_journey_sessions_table.up.sql
-psql transit_db < migrations/009_create_daily_bills_table.up.sql
+DATABASE_URL="postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable" go run cmd/migrate/main.go
 ```
 
-5. Load GTFS data:
+5. Load Delhi GTFS data:
 ```bash
-go run cmd/loader/main.go -data ../in-karnataka-bangalore-metropolitan-transport-corporation-bmtc-gtfs-2013-1
+DATABASE_URL="postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable" go run cmd/loader-delhi/main.go -metro ../DMRC_GTFS -bus ../GTFS
 ```
 
 ## Configuration
@@ -66,11 +56,12 @@ export SERVER_PORT=8080
 export SERVER_HOST=0.0.0.0
 
 # Database
+export DATABASE_URL=
 export DB_HOST=localhost
 export DB_PORT=5432
-export DB_USER=postgres
-export DB_PASSWORD=postgres
-export DB_NAME=transit_db
+export DB_USER=traveller
+export DB_PASSWORD=traveller
+export DB_NAME=traveller
 export DB_SSLMODE=disable
 
 # Redis (optional)
@@ -80,8 +71,10 @@ export REDIS_PASSWORD=
 export REDIS_DB=0
 
 # GTFS Data
-export GTFS_DATA_PATH=../in-karnataka-bangalore-metropolitan-transport-corporation-bmtc-gtfs-2013-1
+export GTFS_DATA_PATH=../DMRC_GTFS
 ```
+
+`DATABASE_URL` (if set) takes precedence over the individual `DB_*` variables. This backend expects **PostgreSQL/PostGIS**.
 
 ## Running the Server
 

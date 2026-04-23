@@ -17,14 +17,7 @@ func main() {
 	cfg := config.Load()
 
 	// Initialize database
-	db, err := database.New(
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
-	)
+	db, err := database.NewFromConfig(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -49,7 +42,7 @@ func main() {
 	routeBoardingService := services.NewRouteBoardingService(db, stopService, fareService, journeySessionService, vehicleLocationService)
 	autoAlightService := services.NewAutoAlightService(routeBoardingService, vehicleLocationService, stopService)
 	dailyBillService := services.NewDailyBillService(db)
-	
+
 	var realtimeService *services.RealtimeService
 	if redisClient != nil {
 		realtimeService = services.NewRealtimeService(db, redisClient)
@@ -82,6 +75,7 @@ func main() {
 		{
 			users.POST("", userHandler.CreateUser)
 			users.GET("/:id", userHandler.GetUser)
+			users.GET("/phone/:phone", userHandler.GetUserByPhone)
 			users.DELETE("/phone/:phone", userHandler.DeleteUserByPhone)
 		}
 
@@ -104,6 +98,7 @@ func main() {
 			routes.GET("", routeHandler.ListRoutes)
 			routes.GET("/search", routeHandler.SearchRoutes)
 			routes.GET("/:id", routeHandler.GetRoute)
+			routes.GET("/:id/detail", routeHandler.GetRouteDetail)
 			routes.GET("/:id/stops", routeHandler.GetRouteStops)
 			routes.GET("/:id/trips", routeHandler.GetRouteTrips)
 		}
@@ -141,11 +136,11 @@ func main() {
 		// Route Boardings (Track actual routes user takes)
 		boardings := v1.Group("/boardings")
 		{
-			boardings.POST("/board", boardingHandler.BoardRoute)           // Record boarding a route (manual)
-			boardings.POST("/auto-board", boardingHandler.AutoDetectAndBoard) // Auto-detect vehicle and board
-			boardings.POST("/alight", boardingHandler.AlightRoute)          // Record alighting from route
+			boardings.POST("/board", boardingHandler.BoardRoute)                             // Record boarding a route (manual)
+			boardings.POST("/auto-board", boardingHandler.AutoDetectAndBoard)                // Auto-detect vehicle and board
+			boardings.POST("/alight", boardingHandler.AlightRoute)                           // Record alighting from route
 			boardings.POST("/continuous-location", boardingHandler.UpdateContinuousLocation) // Continuous location updates with auto-alighting
-			boardings.GET("/sessions/:session_id", boardingHandler.GetSessionBoardings) // Get all boardings for session
+			boardings.GET("/sessions/:session_id", boardingHandler.GetSessionBoardings)      // Get all boardings for session
 			boardings.GET("/sessions/:session_id/active", boardingHandler.GetActiveBoarding) // Get active boarding
 		}
 
@@ -171,4 +166,3 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
-

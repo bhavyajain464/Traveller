@@ -23,17 +23,10 @@ func TestRoutePlanner(t *testing.T) {
 
 // Example test setup helper
 func setupTestDB(t *testing.T) *database.DB {
-	// Connect to test database
-	db, err := database.New(
-		"localhost",
-		"5432",
-		"postgres",
-		"postgres",
-		"transit_test",
-		"disable",
-	)
+	// Connect to test PostgreSQL/PostGIS database.
+	db, err := database.New("localhost", "5432", "traveller", "traveller", "transit_test", "disable")
 	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
+		t.Skipf("Skipping integration test; test database unavailable: %v", err)
 	}
 	return db
 }
@@ -47,7 +40,7 @@ func TestStopService_GetByID(t *testing.T) {
 	defer db.Close()
 
 	stopService := services.NewStopService(db)
-	
+
 	// Test with a known stop ID from Delhi Metro data (New Delhi station)
 	stop, err := stopService.GetByID("49")
 	if err != nil {
@@ -72,7 +65,7 @@ func TestStopService_FindNearby(t *testing.T) {
 	defer db.Close()
 
 	stopService := services.NewStopService(db)
-	
+
 	// Test with Delhi coordinates (Connaught Place area)
 	stops, err := stopService.FindNearby(28.6304, 77.2177, 1000, 10)
 	if err != nil {
@@ -83,5 +76,3 @@ func TestStopService_FindNearby(t *testing.T) {
 		t.Fatal("Should find at least one nearby stop")
 	}
 }
-
-

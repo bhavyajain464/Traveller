@@ -229,35 +229,54 @@ func (rp *RoutePlanner) planBetweenStops(fromStopID, toStopID string, departureT
 }
 
 func (rp *RoutePlanner) findDirectRoutes(fromStopID, toStopID string, departureTime time.Time, journeyDate time.Time) ([]models.JourneyOption, error) {
-	query := `SELECT DISTINCT ON (t.route_id, st1.departure_time) 
-		t.route_id, r.route_short_name, r.route_long_name, 
-		r.route_type, st1.trip_id, st1.departure_time, st2.arrival_time, st2.stop_sequence - st1.stop_sequence as stop_count
-	FROM stop_times st1
-	JOIN stop_times st2 ON st1.trip_id = st2.trip_id
-	JOIN trips t ON st1.trip_id = t.trip_id
-	JOIN routes r ON t.route_id = r.route_id
-	JOIN calendar cal ON t.service_id = cal.service_id
-	WHERE st1.stop_id = $1 
-		AND st2.stop_id = $2
-		AND st1.stop_sequence < st2.stop_sequence
-		AND cal.start_date <= $4::date
-		AND cal.end_date >= $4::date - INTERVAL '1 year'
-		AND (
-			(EXTRACT(DOW FROM $4::date) = 0 AND cal.sunday = 1) OR
-			(EXTRACT(DOW FROM $4::date) = 1 AND cal.monday = 1) OR
-			(EXTRACT(DOW FROM $4::date) = 2 AND cal.tuesday = 1) OR
-			(EXTRACT(DOW FROM $4::date) = 3 AND cal.wednesday = 1) OR
-			(EXTRACT(DOW FROM $4::date) = 4 AND cal.thursday = 1) OR
-			(EXTRACT(DOW FROM $4::date) = 5 AND cal.friday = 1) OR
-			(EXTRACT(DOW FROM $4::date) = 6 AND cal.saturday = 1)
-		)
-		AND st1.departure_time >= $3
-	ORDER BY st1.departure_time, t.route_id
+	query := `SELECT route_id, route_short_name, route_long_name, route_type, trip_id, departure_time, arrival_time, stop_count
+	FROM (
+		SELECT 
+			t.route_id,
+			r.route_short_name,
+			r.route_long_name,
+			r.route_type,
+			st1.trip_id,
+			st1.departure_time,
+			st2.arrival_time,
+			(st2.stop_sequence - st1.stop_sequence) AS stop_count,
+			ROW_NUMBER() OVER (PARTITION BY t.route_id, st1.departure_time ORDER BY st2.arrival_time) AS rn
+		FROM stop_times st1
+		JOIN stop_times st2 ON st1.trip_id = st2.trip_id
+		JOIN trips t ON st1.trip_id = t.trip_id
+		JOIN routes r ON t.route_id = r.route_id
+		JOIN calendar cal ON t.service_id = cal.service_id
+		WHERE st1.stop_id = ?
+			AND st2.stop_id = ?
+			AND st1.stop_sequence < st2.stop_sequence
+			AND cal.start_date <= ?
+			AND cal.end_date >= ?
+			AND (
+				(EXTRACT(DOW FROM ?::date) = 0 AND cal.sunday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 1 AND cal.monday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 2 AND cal.tuesday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 3 AND cal.wednesday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 4 AND cal.thursday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 5 AND cal.friday = 1) OR
+				(EXTRACT(DOW FROM ?::date) = 6 AND cal.saturday = 1)
+			)
+			AND st1.departure_time >= ?
+	) ranked
+	WHERE rn = 1
+	ORDER BY departure_time, route_id
 	LIMIT 20`
 
 	departureTimeStr := departureTime.Format("15:04:05")
 	journeyDateStr := journeyDate.Format("2006-01-02")
-	rows, err := rp.db.Query(query, fromStopID, toStopID, departureTimeStr, journeyDateStr)
+	rows, err := rp.db.Query(
+		query,
+		fromStopID,
+		toStopID,
+		journeyDateStr,
+		journeyDateStr,
+		journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr, journeyDateStr,
+		departureTimeStr,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -414,7 +433,7 @@ func (rp *RoutePlanner) getRoutesForStop(stopID string) ([]models.Route, error) 
 	FROM routes r
 	JOIN trips t ON r.route_id = t.route_id
 	JOIN stop_times st ON t.trip_id = st.trip_id
-	WHERE st.stop_id = $1`
+	WHERE st.stop_id = ?`
 
 	rows, err := rp.db.Query(query, stopID)
 	if err != nil {
@@ -437,18 +456,23 @@ func (rp *RoutePlanner) getRoutesForStop(stopID string) ([]models.Route, error) 
 }
 
 func (rp *RoutePlanner) getStopsOnRouteAfterStop(routeID, stopID string) ([]models.Stop, error) {
-	query := `SELECT DISTINCT s.stop_id, s.stop_code, s.stop_name, s.stop_desc, s.stop_lat, s.stop_lon,
+	query := `SELECT s.stop_id, s.stop_code, s.stop_name, s.stop_desc, s.stop_lat, s.stop_lon,
 		s.zone_id, s.stop_url, s.location_type, s.parent_station, s.stop_timezone, s.wheelchair_boarding
 	FROM stops s
 	JOIN stop_times st ON s.stop_id = st.stop_id
 	JOIN trips t ON st.trip_id = t.trip_id
-	WHERE t.route_id = $1
-		AND st.stop_sequence > (SELECT MIN(st2.stop_sequence) FROM stop_times st2 
-			JOIN trips t2 ON st2.trip_id = t2.trip_id 
-			WHERE t2.route_id = $1 AND st2.stop_id = $2)
-	ORDER BY MIN(st.stop_sequence) OVER (PARTITION BY t.trip_id, s.stop_id)`
+	JOIN (
+		SELECT MIN(st2.stop_sequence) AS origin_seq
+		FROM stop_times st2
+		JOIN trips t2 ON st2.trip_id = t2.trip_id
+		WHERE t2.route_id = ? AND st2.stop_id = ?
+	) origin
+	WHERE t.route_id = ? AND st.stop_sequence > origin.origin_seq
+	GROUP BY s.stop_id, s.stop_code, s.stop_name, s.stop_desc, s.stop_lat, s.stop_lon,
+		s.zone_id, s.stop_url, s.location_type, s.parent_station, s.stop_timezone, s.wheelchair_boarding
+	ORDER BY MIN(st.stop_sequence)`
 
-	rows, err := rp.db.Query(query, routeID, stopID)
+	rows, err := rp.db.Query(query, routeID, stopID, routeID)
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +646,7 @@ func (rp *RoutePlanner) stopHasModeTypes(stopID string) (hasMetro, hasBus bool) 
 		FROM routes r
 		JOIN trips t ON r.route_id = t.route_id
 		JOIN stop_times st ON t.trip_id = st.trip_id
-		WHERE st.stop_id = $1 AND r.route_type IN (1, 3)`
+		WHERE st.stop_id = ? AND r.route_type IN (1, 3)`
 
 	rows, err := rp.db.Query(query, stopID)
 	if err != nil {

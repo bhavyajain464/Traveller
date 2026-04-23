@@ -21,9 +21,8 @@ CREATE TABLE IF NOT EXISTS journey_sessions (
     FOREIGN KEY (check_out_stop_id) REFERENCES stops(stop_id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_journey_sessions_user_id ON journey_sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_journey_sessions_qr_code ON journey_sessions(qr_code);
-CREATE INDEX IF NOT EXISTS idx_journey_sessions_status ON journey_sessions(status);
-CREATE INDEX IF NOT EXISTS idx_journey_sessions_check_in_time ON journey_sessions(check_in_time);
-CREATE INDEX IF NOT EXISTS idx_journey_sessions_user_date ON journey_sessions(user_id, (check_in_time::date));
-
+CREATE INDEX idx_journey_sessions_user_id ON journey_sessions(user_id);
+CREATE INDEX idx_journey_sessions_qr_code ON journey_sessions(qr_code);
+CREATE INDEX idx_journey_sessions_status ON journey_sessions(status);
+CREATE INDEX idx_journey_sessions_check_in_time ON journey_sessions(check_in_time);
+CREATE INDEX idx_journey_sessions_user_time ON journey_sessions(user_id, check_in_time);

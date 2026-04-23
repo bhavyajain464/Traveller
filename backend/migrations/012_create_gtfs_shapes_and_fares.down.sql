@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS fare_rules;
+DROP TABLE IF EXISTS fare_attributes;
+DROP TABLE IF EXISTS shapes;
+

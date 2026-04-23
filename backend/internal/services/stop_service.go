@@ -20,21 +20,16 @@ func NewStopService(db *database.DB) *StopService {
 func (s *StopService) GetByID(stopID string) (*models.Stop, error) {
 	query := `SELECT stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, zone_id, stop_url, 
 		location_type, parent_station, stop_timezone, wheelchair_boarding
-		FROM stops WHERE stop_id = $1`
+		FROM stops WHERE stop_id = ?`
 
 	stop := &models.Stop{}
-	var parentStation sql.NullString
-
-	err := s.db.QueryRow(query, stopID).Scan(
-		&stop.ID, &stop.Code, &stop.Name, &stop.Description,
-		&stop.Latitude, &stop.Longitude, &stop.ZoneID, &stop.URL,
-		&stop.LocationType, &parentStation, &stop.Timezone, &stop.WheelchairBoarding)
+	err := scanStopRow(
+		s.db.QueryRow(query, stopID),
+		stop,
+		nil,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stop: %w", err)
-	}
-
-	if parentStation.Valid {
-		stop.ParentStation = parentStation.String
 	}
 
 	return stop, nil
@@ -43,7 +38,7 @@ func (s *StopService) GetByID(stopID string) (*models.Stop, error) {
 func (s *StopService) List(limit, offset int) ([]models.Stop, error) {
 	query := `SELECT stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, zone_id, stop_url, 
 		location_type, parent_station, stop_timezone, wheelchair_boarding
-		FROM stops ORDER BY stop_name LIMIT $1 OFFSET $2`
+		FROM stops ORDER BY stop_name LIMIT ? OFFSET ?`
 
 	rows, err := s.db.Query(query, limit, offset)
 	if err != nil {
@@ -54,18 +49,9 @@ func (s *StopService) List(limit, offset int) ([]models.Stop, error) {
 	var stops []models.Stop
 	for rows.Next() {
 		stop := models.Stop{}
-		var parentStation sql.NullString
-
-		err := rows.Scan(
-			&stop.ID, &stop.Code, &stop.Name, &stop.Description,
-			&stop.Latitude, &stop.Longitude, &stop.ZoneID, &stop.URL,
-			&stop.LocationType, &parentStation, &stop.Timezone, &stop.WheelchairBoarding)
+		err := scanStopRow(rows, &stop, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan stop: %w", err)
-		}
-
-		if parentStation.Valid {
-			stop.ParentStation = parentStation.String
 		}
 
 		stops = append(stops, stop)
@@ -78,11 +64,11 @@ func (s *StopService) Search(query string, limit int) ([]models.Stop, error) {
 	sqlQuery := `SELECT stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, zone_id, stop_url, 
 		location_type, parent_station, stop_timezone, wheelchair_boarding
 		FROM stops 
-		WHERE stop_name ILIKE $1 OR stop_code ILIKE $1
-		ORDER BY stop_name LIMIT $2`
+		WHERE LOWER(stop_name) LIKE LOWER(?) OR LOWER(stop_code) LIKE LOWER(?)
+		ORDER BY stop_name LIMIT ?`
 
 	searchPattern := "%" + query + "%"
-	rows, err := s.db.Query(sqlQuery, searchPattern, limit)
+	rows, err := s.db.Query(sqlQuery, searchPattern, searchPattern, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search stops: %w", err)
 	}
@@ -91,18 +77,9 @@ func (s *StopService) Search(query string, limit int) ([]models.Stop, error) {
 	var stops []models.Stop
 	for rows.Next() {
 		stop := models.Stop{}
-		var parentStation sql.NullString
-
-		err := rows.Scan(
-			&stop.ID, &stop.Code, &stop.Name, &stop.Description,
-			&stop.Latitude, &stop.Longitude, &stop.ZoneID, &stop.URL,
-			&stop.LocationType, &parentStation, &stop.Timezone, &stop.WheelchairBoarding)
+		err := scanStopRow(rows, &stop, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan stop: %w", err)
-		}
-
-		if parentStation.Valid {
-			stop.ParentStation = parentStation.String
 		}
 
 		stops = append(stops, stop)
@@ -112,13 +89,17 @@ func (s *StopService) Search(query string, limit int) ([]models.Stop, error) {
 }
 
 func (s *StopService) FindNearby(lat, lon float64, radiusMeters float64, limit int) ([]models.Stop, error) {
-	query := `SELECT stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, zone_id, stop_url, 
-		location_type, parent_station, stop_timezone, wheelchair_boarding,
-		ST_Distance(location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance
-		FROM stops 
-		WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+	query := `SELECT stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, zone_id, stop_url,
+		location_type, parent_station, stop_timezone, wheelchair_boarding, distance
+		FROM (
+			SELECT stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, zone_id, stop_url,
+				location_type, parent_station, stop_timezone, wheelchair_boarding,
+				ST_Distance(stop_geog, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography) AS distance
+			FROM stops
+		) nearby_stops
+		WHERE distance <= ?
 		ORDER BY distance
-		LIMIT $4`
+		LIMIT ?`
 
 	rows, err := s.db.Query(query, lon, lat, radiusMeters, limit)
 	if err != nil {
@@ -129,20 +110,11 @@ func (s *StopService) FindNearby(lat, lon float64, radiusMeters float64, limit i
 	var stops []models.Stop
 	for rows.Next() {
 		stop := models.Stop{}
-		var parentStation sql.NullString
 		var distance sql.NullFloat64
 
-		err := rows.Scan(
-			&stop.ID, &stop.Code, &stop.Name, &stop.Description,
-			&stop.Latitude, &stop.Longitude, &stop.ZoneID, &stop.URL,
-			&stop.LocationType, &parentStation, &stop.Timezone, &stop.WheelchairBoarding,
-			&distance)
+		err := scanStopRow(rows, &stop, &distance)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan stop: %w", err)
-		}
-
-		if parentStation.Valid {
-			stop.ParentStation = parentStation.String
 		}
 
 		stops = append(stops, stop)
@@ -160,26 +132,13 @@ func (s *StopService) GetDepartures(stopID string, limit int) ([]StopDeparture, 
 		st.arrival_time,
 		st.departure_time,
 		t.trip_headsign,
-		cal.service_id
+		t.service_id
 	FROM stop_times st
 	JOIN trips t ON st.trip_id = t.trip_id
 	JOIN routes r ON t.route_id = r.route_id
-	JOIN calendar cal ON t.service_id = cal.service_id
-	WHERE st.stop_id = $1
-		AND cal.start_date <= CURRENT_DATE::text
-		AND cal.end_date >= CURRENT_DATE::text
-		AND (
-			(EXTRACT(DOW FROM CURRENT_DATE) = 0 AND cal.sunday = 1) OR
-			(EXTRACT(DOW FROM CURRENT_DATE) = 1 AND cal.monday = 1) OR
-			(EXTRACT(DOW FROM CURRENT_DATE) = 2 AND cal.tuesday = 1) OR
-			(EXTRACT(DOW FROM CURRENT_DATE) = 3 AND cal.wednesday = 1) OR
-			(EXTRACT(DOW FROM CURRENT_DATE) = 4 AND cal.thursday = 1) OR
-			(EXTRACT(DOW FROM CURRENT_DATE) = 5 AND cal.friday = 1) OR
-			(EXTRACT(DOW FROM CURRENT_DATE) = 6 AND cal.saturday = 1)
-		)
-		AND st.departure_time >= CURRENT_TIME::text
+	WHERE st.stop_id = ?
 	ORDER BY st.departure_time
-	LIMIT $2`
+	LIMIT ?`
 
 	rows, err := s.db.Query(query, stopID, limit)
 	if err != nil {
@@ -190,12 +149,23 @@ func (s *StopService) GetDepartures(stopID string, limit int) ([]StopDeparture, 
 	var departures []StopDeparture
 	for rows.Next() {
 		dep := StopDeparture{}
+		var routeShortName, routeLongName sql.NullString
+		var headsign sql.NullString
 		err := rows.Scan(
-			&dep.TripID, &dep.RouteID, &dep.RouteShortName,
-			&dep.RouteLongName, &dep.ArrivalTime, &dep.DepartureTime,
-			&dep.Headsign, &dep.ServiceID)
+			&dep.TripID, &dep.RouteID, &routeShortName,
+			&routeLongName, &dep.ArrivalTime, &dep.DepartureTime,
+			&headsign, &dep.ServiceID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan departure: %w", err)
+		}
+		if routeShortName.Valid {
+			dep.RouteShortName = routeShortName.String
+		}
+		if routeLongName.Valid {
+			dep.RouteLongName = routeLongName.String
+		}
+		if headsign.Valid {
+			dep.Headsign = headsign.String
 		}
 		departures = append(departures, dep)
 	}
@@ -214,6 +184,66 @@ type StopDeparture struct {
 	ServiceID      string `json:"service_id"`
 }
 
+type stopScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanStopRow(scanner stopScanner, stop *models.Stop, distance *sql.NullFloat64) error {
+	var code, description, zoneID, stopURL sql.NullString
+	var parentStation, timezone sql.NullString
+	var locationType, wheelchairBoarding sql.NullInt64
+
+	destinations := []any{
+		&stop.ID,
+		&code,
+		&stop.Name,
+		&description,
+		&stop.Latitude,
+		&stop.Longitude,
+		&zoneID,
+		&stopURL,
+		&locationType,
+		&parentStation,
+		&timezone,
+		&wheelchairBoarding,
+	}
+
+	if distance != nil {
+		destinations = append(destinations, distance)
+	}
+
+	if err := scanner.Scan(destinations...); err != nil {
+		return err
+	}
+
+	if code.Valid {
+		stop.Code = code.String
+	}
+	if description.Valid {
+		stop.Description = description.String
+	}
+	if zoneID.Valid {
+		stop.ZoneID = zoneID.String
+	}
+	if stopURL.Valid {
+		stop.URL = stopURL.String
+	}
+	if locationType.Valid {
+		stop.LocationType = int(locationType.Int64)
+	}
+	if parentStation.Valid {
+		stop.ParentStation = parentStation.String
+	}
+	if timezone.Valid {
+		stop.Timezone = timezone.String
+	}
+	if wheelchairBoarding.Valid {
+		stop.WheelchairBoarding = int(wheelchairBoarding.Int64)
+	}
+
+	return nil
+}
+
 // Haversine distance calculation (fallback if PostGIS not available)
 func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const earthRadiusKm = 6371.0
@@ -228,4 +258,3 @@ func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return earthRadiusKm * c * 1000 // Return in meters
 }
-

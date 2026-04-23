@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number);
-CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE INDEX idx_users_phone ON users(phone_number);
+CREATE INDEX idx_users_status ON users(status);
 
 

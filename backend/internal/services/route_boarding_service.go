@@ -86,7 +86,7 @@ func (s *RouteBoardingService) BoardRoute(req models.BoardRouteRequest) (*models
 	// Insert into database
 	query := `INSERT INTO route_boardings 
 		(id, session_id, route_id, vehicle_id, boarding_stop_id, boarding_time, boarding_lat, boarding_lon, distance, fare, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.Exec(query,
 		boarding.ID, boarding.SessionID, boarding.RouteID, boarding.VehicleID, boarding.BoardingStopID,
@@ -156,7 +156,7 @@ func (s *RouteBoardingService) AutoDetectAndBoard(sessionID string, userLat, use
 	// Insert into database
 	query := `INSERT INTO route_boardings 
 		(id, session_id, route_id, vehicle_id, boarding_stop_id, boarding_time, boarding_lat, boarding_lon, distance, fare, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.Exec(query,
 		boarding.ID, boarding.SessionID, boarding.RouteID, boarding.VehicleID, boarding.BoardingStopID,
@@ -222,14 +222,14 @@ func (s *RouteBoardingService) AlightRoute(req models.AlightRouteRequest) (*mode
 	boarding.UpdatedAt = now
 
 	updateQuery := `UPDATE route_boardings SET
-		alighting_stop_id = $1,
-		alighting_time = $2,
-		alighting_lat = $3,
-		alighting_lon = $4,
-		distance = $5,
-		fare = $6,
-		updated_at = $7
-		WHERE id = $8`
+		alighting_stop_id = ?,
+		alighting_time = ?,
+		alighting_lat = ?,
+		alighting_lon = ?,
+		distance = ?,
+		fare = ?,
+		updated_at = ?
+		WHERE id = ?`
 
 	_, err = s.db.Exec(updateQuery,
 		boarding.AlightingStopID, boarding.AlightingTime,
@@ -247,7 +247,7 @@ func (s *RouteBoardingService) AlightRoute(req models.AlightRouteRequest) (*mode
 func (s *RouteBoardingService) GetBoardingsForSession(sessionID string) ([]models.RouteBoarding, error) {
 	query := `SELECT id, session_id, route_id, vehicle_id, boarding_stop_id, alighting_stop_id, boarding_time, alighting_time,
 		boarding_lat, boarding_lon, alighting_lat, alighting_lon, distance, fare, created_at, updated_at
-		FROM route_boardings WHERE session_id = $1 ORDER BY boarding_time`
+		FROM route_boardings WHERE session_id = ? ORDER BY boarding_time`
 
 	rows, err := s.db.Query(query, sessionID)
 	if err != nil {
@@ -304,7 +304,7 @@ func (s *RouteBoardingService) GetBoardingsForSession(sessionID string) ([]model
 func (s *RouteBoardingService) GetActiveBoarding(sessionID string) (*models.RouteBoarding, error) {
 	query := `SELECT id, session_id, route_id, vehicle_id, boarding_stop_id, alighting_stop_id, boarding_time, alighting_time,
 		boarding_lat, boarding_lon, alighting_lat, alighting_lon, distance, fare, created_at, updated_at
-		FROM route_boardings WHERE session_id = $1 AND alighting_time IS NULL ORDER BY boarding_time DESC LIMIT 1`
+		FROM route_boardings WHERE session_id = ? AND alighting_time IS NULL ORDER BY boarding_time DESC LIMIT 1`
 
 	boarding := &models.RouteBoarding{}
 	var alightingStopID sql.NullString
@@ -361,7 +361,7 @@ func (s *RouteBoardingService) CalculateFareFromBoardings(sessionID string) (flo
 func (s *RouteBoardingService) GetBoardingByID(boardingID string) (*models.RouteBoarding, error) {
 	query := `SELECT id, session_id, route_id, vehicle_id, boarding_stop_id, alighting_stop_id, boarding_time, alighting_time,
 		boarding_lat, boarding_lon, alighting_lat, alighting_lon, distance, fare, created_at, updated_at
-		FROM route_boardings WHERE id = $1`
+		FROM route_boardings WHERE id = ?`
 
 	boarding := &models.RouteBoarding{}
 	var alightingStopID sql.NullString

@@ -13,6 +13,6 @@ CREATE TABLE IF NOT EXISTS calendar (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_calendar_dates ON calendar(start_date, end_date);
+CREATE INDEX idx_calendar_dates ON calendar(start_date, end_date);
 
 

@@ -11,31 +11,18 @@ CREATE TABLE IF NOT EXISTS stops (
     parent_station VARCHAR(255),
     stop_timezone VARCHAR(50),
     wheelchair_boarding INTEGER,
-    location GEOMETRY(POINT, 4326),
+    stop_geog GEOGRAPHY(Point, 4326) GENERATED ALWAYS AS (
+        ST_SetSRID(ST_MakePoint(stop_lon::double precision, stop_lat::double precision), 4326)::geography
+    ) STORED,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (parent_station) REFERENCES stops(stop_id) ON DELETE SET NULL
 );
 
--- Create PostGIS geometry from lat/lon
-CREATE INDEX IF NOT EXISTS idx_stops_location ON stops USING GIST(location);
-CREATE INDEX IF NOT EXISTS idx_stops_name ON stops(stop_name);
-CREATE INDEX IF NOT EXISTS idx_stops_code ON stops(stop_code);
-CREATE INDEX IF NOT EXISTS idx_stops_zone ON stops(zone_id);
-CREATE INDEX IF NOT EXISTS idx_stops_parent ON stops(parent_station);
-
--- Update location geometry from lat/lon
-CREATE OR REPLACE FUNCTION update_stop_location()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.location = ST_SetSRID(ST_MakePoint(NEW.stop_lon, NEW.stop_lat), 4326);
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_update_stop_location
-    BEFORE INSERT OR UPDATE ON stops
-    FOR EACH ROW
-    EXECUTE FUNCTION update_stop_location();
-
+CREATE INDEX idx_stops_name ON stops(stop_name);
+CREATE INDEX idx_stops_code ON stops(stop_code);
+CREATE INDEX idx_stops_zone ON stops(zone_id);
+CREATE INDEX idx_stops_parent ON stops(parent_station);
+CREATE INDEX idx_stops_lat_lon ON stops(stop_lat, stop_lon);
+CREATE INDEX idx_stops_geog ON stops USING GIST(stop_geog);
 

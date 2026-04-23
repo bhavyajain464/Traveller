@@ -567,7 +567,7 @@ func (s *VehicleLocationService) calculateDistance(lat1, lon1, lat2, lon2 float6
 
 // getAgencyIDForRoute gets the agency ID for a route
 func (s *VehicleLocationService) getAgencyIDForRoute(routeID string) string {
-	query := `SELECT agency_id FROM routes WHERE id = $1`
+	query := `SELECT agency_id FROM routes WHERE route_id = ?`
 	var agencyID string
 	err := s.db.QueryRow(query, routeID).Scan(&agencyID)
 	if err != nil {
@@ -679,7 +679,7 @@ func (s *VehicleLocationService) calculateVehiclePositionFromSchedule(tripID str
 		s.stop_lat, s.stop_lon
 		FROM stop_times st
 		JOIN stops s ON st.stop_id = s.stop_id
-		WHERE st.trip_id = $1
+		WHERE st.trip_id = ?
 		ORDER BY st.stop_sequence`
 
 	rows, err := s.db.Query(query, tripID)
@@ -797,7 +797,7 @@ func (s *VehicleLocationService) calculateVehiclePositionFromScheduleWithElapsed
 		s.stop_lat, s.stop_lon
 		FROM stop_times st
 		JOIN stops s ON st.stop_id = s.stop_id
-		WHERE st.trip_id = $1
+		WHERE st.trip_id = ?
 		ORDER BY st.stop_sequence`
 
 	rows, err := s.db.Query(query, tripID)

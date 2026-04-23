@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"log"
-	"os"
 
 	"indian-transit-backend/internal/config"
 	"indian-transit-backend/internal/database"
@@ -26,14 +25,7 @@ func main() {
 	cfg := config.Load()
 
 	// Initialize database
-	db, err := database.New(
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
-	)
+	db, err := database.NewFromConfig(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -60,7 +52,7 @@ func main() {
 
 	// Load data into database
 	log.Println("Loading data into database...")
-	loader := gtfs.NewLoader(db)
+	loader := gtfs.NewLoader(db.DB)
 	if err := loader.Load(data); err != nil {
 		log.Fatalf("Failed to load data: %v", err)
 	}
@@ -73,5 +65,3 @@ func main() {
 	log.Printf("  Stop Times: %d", len(data.StopTimes))
 	log.Printf("  Calendar: %d", len(data.Calendar))
 }
-
-

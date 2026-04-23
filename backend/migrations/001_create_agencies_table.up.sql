@@ -10,6 +10,6 @@ CREATE TABLE IF NOT EXISTS agencies (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_agencies_name ON agencies(agency_name);
+CREATE INDEX idx_agencies_name ON agencies(agency_name);
 
 

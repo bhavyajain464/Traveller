@@ -37,22 +37,22 @@ type VehiclePosition struct {
 }
 
 type TripUpdate struct {
-	TripID           string           `json:"trip_id"`
-	RouteID          string           `json:"route_id"`
-	StopTimeUpdates  []StopTimeUpdate `json:"stop_time_updates"`
-	VehicleID        string           `json:"vehicle_id,omitempty"`
-	Timestamp        time.Time        `json:"timestamp"`
-	Delay            int              `json:"delay,omitempty"` // in seconds
+	TripID          string           `json:"trip_id"`
+	RouteID         string           `json:"route_id"`
+	StopTimeUpdates []StopTimeUpdate `json:"stop_time_updates"`
+	VehicleID       string           `json:"vehicle_id,omitempty"`
+	Timestamp       time.Time        `json:"timestamp"`
+	Delay           int              `json:"delay,omitempty"` // in seconds
 }
 
 type StopTimeUpdate struct {
-	StopID          string    `json:"stop_id"`
-	StopSequence    int       `json:"stop_sequence"`
-	ArrivalTime     time.Time `json:"arrival_time,omitempty"`
-	DepartureTime   time.Time `json:"departure_time,omitempty"`
-	ArrivalDelay    int       `json:"arrival_delay,omitempty"`    // in seconds
-	DepartureDelay  int       `json:"departure_delay,omitempty"`   // in seconds
-	ScheduleRelationship string `json:"schedule_relationship,omitempty"`
+	StopID               string    `json:"stop_id"`
+	StopSequence         int       `json:"stop_sequence"`
+	ArrivalTime          time.Time `json:"arrival_time,omitempty"`
+	DepartureTime        time.Time `json:"departure_time,omitempty"`
+	ArrivalDelay         int       `json:"arrival_delay,omitempty"`   // in seconds
+	DepartureDelay       int       `json:"departure_delay,omitempty"` // in seconds
+	ScheduleRelationship string    `json:"schedule_relationship,omitempty"`
 }
 
 func (s *RealtimeService) UpdateVehiclePosition(position VehiclePosition) error {
@@ -61,7 +61,7 @@ func (s *RealtimeService) UpdateVehiclePosition(position VehiclePosition) error 
 	}
 
 	key := fmt.Sprintf("vehicle:%s", position.TripID)
-	
+
 	data, err := json.Marshal(position)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vehicle position: %w", err)
@@ -89,7 +89,7 @@ func (s *RealtimeService) GetVehiclePosition(tripID string) (*VehiclePosition, e
 	}
 
 	key := fmt.Sprintf("vehicle:%s", tripID)
-	
+
 	data, err := s.redis.Get(s.ctx, key).Result()
 	if err == redis.Nil {
 		return nil, nil // Not found
@@ -113,7 +113,7 @@ func (s *RealtimeService) UpdateTripUpdate(update TripUpdate) error {
 	}
 
 	key := fmt.Sprintf("trip:%s", update.TripID)
-	
+
 	data, err := json.Marshal(update)
 	if err != nil {
 		return fmt.Errorf("failed to marshal trip update: %w", err)
@@ -134,7 +134,7 @@ func (s *RealtimeService) GetTripUpdate(tripID string) (*TripUpdate, error) {
 	}
 
 	key := fmt.Sprintf("trip:%s", tripID)
-	
+
 	data, err := s.redis.Get(s.ctx, key).Result()
 	if err == redis.Nil {
 		return nil, nil // Not found
@@ -166,9 +166,9 @@ func (s *RealtimeService) GetStopArrivals(stopID string, limit int) ([]StopArriv
 	JOIN trips t ON st.trip_id = t.trip_id
 	JOIN routes r ON t.route_id = r.route_id
 	JOIN calendar cal ON t.service_id = cal.service_id
-	WHERE st.stop_id = $1
-		AND cal.start_date <= CURRENT_DATE::text
-		AND cal.end_date >= CURRENT_DATE::text
+	WHERE st.stop_id = ?
+		AND cal.start_date <= CURRENT_DATE
+		AND cal.end_date >= CURRENT_DATE
 		AND (
 			(EXTRACT(DOW FROM CURRENT_DATE) = 0 AND cal.sunday = 1) OR
 			(EXTRACT(DOW FROM CURRENT_DATE) = 1 AND cal.monday = 1) OR
@@ -178,9 +178,9 @@ func (s *RealtimeService) GetStopArrivals(stopID string, limit int) ([]StopArriv
 			(EXTRACT(DOW FROM CURRENT_DATE) = 5 AND cal.friday = 1) OR
 			(EXTRACT(DOW FROM CURRENT_DATE) = 6 AND cal.saturday = 1)
 		)
-		AND st.departure_time >= CURRENT_TIME::text
+		AND st.departure_time >= TO_CHAR(CURRENT_TIME, 'HH24:MI:SS')
 	ORDER BY st.departure_time
-	LIMIT $2`
+	LIMIT ?`
 
 	rows, err := s.db.Query(query, stopID, limit)
 	if err != nil {
@@ -225,15 +225,14 @@ func (s *RealtimeService) GetStopArrivals(stopID string, limit int) ([]StopArriv
 }
 
 type StopArrival struct {
-	TripID            string    `json:"trip_id"`
-	RouteID           string    `json:"route_id"`
-	RouteShortName    string    `json:"route_short_name"`
-	RouteLongName     string    `json:"route_long_name"`
-	ScheduledArrival  time.Time `json:"scheduled_arrival"`
+	TripID             string    `json:"trip_id"`
+	RouteID            string    `json:"route_id"`
+	RouteShortName     string    `json:"route_short_name"`
+	RouteLongName      string    `json:"route_long_name"`
+	ScheduledArrival   time.Time `json:"scheduled_arrival"`
 	ScheduledDeparture time.Time `json:"scheduled_departure"`
-	RealTimeArrival   time.Time `json:"realtime_arrival,omitempty"`
-	RealTimeDeparture time.Time `json:"realtime_departure,omitempty"`
-	Headsign          string    `json:"headsign"`
-	HasRealTime       bool      `json:"has_realtime"`
+	RealTimeArrival    time.Time `json:"realtime_arrival,omitempty"`
+	RealTimeDeparture  time.Time `json:"realtime_departure,omitempty"`
+	Headsign           string    `json:"headsign"`
+	HasRealTime        bool      `json:"has_realtime"`
 }
-

@@ -59,6 +59,23 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": user})
 }
 
+// GetUserByPhone retrieves a user by phone number
+func (h *UserHandler) GetUserByPhone(c *gin.Context) {
+	phoneNumber := c.Param("phone")
+	if phoneNumber == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "phone_number is required"})
+		return
+	}
+
+	user, err := h.userService.GetUserByPhone(phoneNumber)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user": user})
+}
+
 // DeleteUserByPhone deletes a user by phone number
 func (h *UserHandler) DeleteUserByPhone(c *gin.Context) {
 	phoneNumber := c.Param("phone")
@@ -74,8 +91,7 @@ func (h *UserHandler) DeleteUserByPhone(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "User deleted successfully",
+		"message":      "User deleted successfully",
 		"phone_number": phoneNumber,
 	})
 }
-

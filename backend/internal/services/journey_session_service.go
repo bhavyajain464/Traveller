@@ -12,10 +12,10 @@ import (
 )
 
 type JourneySessionService struct {
-	db            *database.DB
-	stopService   *StopService
-	fareService   *FareService
-	routePlanner  *RoutePlanner
+	db           *database.DB
+	stopService  *StopService
+	fareService  *FareService
+	routePlanner *RoutePlanner
 }
 
 func NewJourneySessionService(db *database.DB, stopService *StopService, fareService *FareService, routePlanner *RoutePlanner) *JourneySessionService {
@@ -63,7 +63,7 @@ func (s *JourneySessionService) CheckIn(req models.CheckInRequest) (*models.Jour
 	// Insert into database
 	query := `INSERT INTO journey_sessions 
 		(id, user_id, qr_code, check_in_time, check_in_stop_id, check_in_lat, check_in_lon, status, routes_used, total_distance, total_fare, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	routesJSON, _ := json.Marshal(session.RoutesUsed)
 	_, err := s.db.Exec(query,
@@ -160,16 +160,16 @@ func (s *JourneySessionService) CheckOut(req models.CheckOutRequest, routeBoardi
 	// Update database
 	routesJSON, _ := json.Marshal(session.RoutesUsed)
 	updateQuery := `UPDATE journey_sessions SET
-		check_out_time = $1,
-		check_out_stop_id = $2,
-		check_out_lat = $3,
-		check_out_lon = $4,
-		status = $5,
-		routes_used = $6,
-		total_distance = $7,
-		total_fare = $8,
-		updated_at = $9
-		WHERE id = $10`
+		check_out_time = ?,
+		check_out_stop_id = ?,
+		check_out_lat = ?,
+		check_out_lon = ?,
+		status = ?,
+		routes_used = ?,
+		total_distance = ?,
+		total_fare = ?,
+		updated_at = ?
+		WHERE id = ?`
 
 	_, err = s.db.Exec(updateQuery,
 		session.CheckOutTime, session.CheckOutStopID,
@@ -225,7 +225,7 @@ func (s *JourneySessionService) GetSessionByQRCode(qrCode string) (*models.Journ
 	query := `SELECT id, user_id, qr_code, check_in_time, check_out_time, check_in_stop_id, check_out_stop_id,
 		check_in_lat, check_in_lon, check_out_lat, check_out_lon, status, routes_used, total_distance, total_fare,
 		created_at, updated_at
-		FROM journey_sessions WHERE qr_code = $1`
+		FROM journey_sessions WHERE qr_code = ?`
 
 	session := &models.JourneySession{}
 	var checkOutTime sql.NullTime
@@ -269,7 +269,7 @@ func (s *JourneySessionService) GetActiveSessions(userID string) ([]models.Journ
 	query := `SELECT id, user_id, qr_code, check_in_time, check_out_time, check_in_stop_id, check_out_stop_id,
 		check_in_lat, check_in_lon, check_out_lat, check_out_lon, status, routes_used, total_distance, total_fare,
 		created_at, updated_at
-		FROM journey_sessions WHERE user_id = $1 AND status = 'active' ORDER BY check_in_time DESC`
+		FROM journey_sessions WHERE user_id = ? AND status = 'active' ORDER BY check_in_time DESC`
 
 	rows, err := s.db.Query(query, userID)
 	if err != nil {
@@ -312,7 +312,7 @@ func (s *JourneySessionService) GetSessionByID(sessionID string) (*models.Journe
 	query := `SELECT id, user_id, qr_code, check_in_time, check_out_time, check_in_stop_id, check_out_stop_id,
 		check_in_lat, check_in_lon, check_out_lat, check_out_lon, status, routes_used, total_distance, total_fare,
 		created_at, updated_at
-		FROM journey_sessions WHERE id = $1`
+		FROM journey_sessions WHERE id = ?`
 
 	session := &models.JourneySession{}
 	var checkOutTime sql.NullTime
@@ -354,10 +354,10 @@ func (s *JourneySessionService) GetSessionByID(sessionID string) (*models.Journe
 // inferJourneyDetails infers journey details when routes are not tracked (fallback)
 func (s *JourneySessionService) inferJourneyDetails(session *models.JourneySession, req models.CheckOutRequest) (float64, float64, []string) {
 	journeyReq := models.JourneyRequest{
-		FromLat: session.CheckInLat,
-		FromLon: session.CheckInLon,
-		ToLat:   req.Latitude,
-		ToLon:   req.Longitude,
+		FromLat:       session.CheckInLat,
+		FromLon:       session.CheckInLon,
+		ToLat:         req.Latitude,
+		ToLon:         req.Longitude,
 		DepartureTime: &session.CheckInTime,
 	}
 
@@ -376,7 +376,7 @@ func (s *JourneySessionService) inferJourneyDetails(session *models.JourneySessi
 	if bestOption.Fare != nil {
 		fare = *bestOption.Fare
 	}
-	
+
 	routesUsed := make([]string, 0)
 	for _, leg := range bestOption.Legs {
 		if leg.RouteID != "" {
@@ -390,22 +390,23 @@ func (s *JourneySessionService) inferJourneyDetails(session *models.JourneySessi
 // updateDailyBill updates or creates daily bill for user
 func (s *JourneySessionService) updateDailyBill(userID string, journeyDate time.Time) error {
 	billDate := time.Date(journeyDate.Year(), journeyDate.Month(), journeyDate.Day(), 0, 0, 0, 0, journeyDate.Location())
+	nextDate := billDate.AddDate(0, 0, 1)
 
 	// Get all completed journeys for the day
 	query := `SELECT COUNT(*), COALESCE(SUM(total_distance), 0), COALESCE(SUM(total_fare), 0)
 		FROM journey_sessions
-		WHERE user_id = $1 AND DATE(check_in_time) = $2 AND status = 'completed'`
+		WHERE user_id = ? AND check_in_time >= ? AND check_in_time < ? AND status = 'completed'`
 
 	var totalJourneys int
 	var totalDistance, totalFare float64
-	err := s.db.QueryRow(query, userID, billDate).Scan(&totalJourneys, &totalDistance, &totalFare)
+	err := s.db.QueryRow(query, userID, billDate, nextDate).Scan(&totalJourneys, &totalDistance, &totalFare)
 	if err != nil {
 		return err
 	}
 
 	// Upsert daily bill
 	upsertQuery := `INSERT INTO daily_bills (id, user_id, bill_date, total_journeys, total_distance, total_fare, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 		ON CONFLICT (user_id, bill_date) DO UPDATE SET
 			total_journeys = EXCLUDED.total_journeys,
 			total_distance = EXCLUDED.total_distance,
@@ -423,11 +424,18 @@ func (s *JourneySessionService) generateQRCode(sessionID, userID string) string 
 	// Generate a unique QR code
 	// Format: TRANSIT-{timestamp}-{sessionID}-{hash}
 	timestamp := time.Now().Unix()
-	return fmt.Sprintf("TRANSIT-%d-%s-%s", timestamp, sessionID[:8], userID[:8])
+	return fmt.Sprintf("TRANSIT-%d-%s-%s", timestamp, safeCodePrefix(sessionID, 8), safeCodePrefix(userID, 8))
+}
+
+func safeCodePrefix(value string, maxLen int) string {
+	if len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen]
 }
 
 func (s *JourneySessionService) calculateDirectDistance(lat1, lon1, lat2, lon2 float64) float64 {
-	return haversineDistance(lat1, lon1, lat2, lon2)
+	return haversineDistance(lat1, lon1, lat2, lon2) / 1000.0
 }
 
 func (s *JourneySessionService) calculateTotalDistance(option models.JourneyOption) float64 {
@@ -437,10 +445,9 @@ func (s *JourneySessionService) calculateTotalDistance(option models.JourneyOpti
 			fromStop, _ := s.stopService.GetByID(leg.FromStopID)
 			toStop, _ := s.stopService.GetByID(leg.ToStopID)
 			if fromStop != nil && toStop != nil {
-				total += haversineDistance(fromStop.Latitude, fromStop.Longitude, toStop.Latitude, toStop.Longitude)
+				total += haversineDistance(fromStop.Latitude, fromStop.Longitude, toStop.Latitude, toStop.Longitude) / 1000.0
 			}
 		}
 	}
 	return total
 }
-

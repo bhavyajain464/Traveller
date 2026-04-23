@@ -24,7 +24,7 @@ func (s *DailyBillService) GetDailyBill(userID string, billDate time.Time) (*mod
 
 	query := `SELECT id, user_id, bill_date, total_journeys, total_distance, total_fare, status, 
 		payment_id, payment_method, paid_at, created_at, updated_at
-		FROM daily_bills WHERE user_id = $1 AND bill_date = $2`
+		FROM daily_bills WHERE user_id = ? AND bill_date = ?`
 
 	bill := &models.DailyBill{}
 	var paymentID, paymentMethod sql.NullString
@@ -67,7 +67,7 @@ func (s *DailyBillService) GetPendingBills(userID string) ([]models.DailyBill, e
 	query := `SELECT id, user_id, bill_date, total_journeys, total_distance, total_fare, status, 
 		payment_id, payment_method, paid_at, created_at, updated_at
 		FROM daily_bills 
-		WHERE user_id = $1 AND status = 'pending'
+		WHERE user_id = ? AND status = 'pending'
 		ORDER BY bill_date DESC`
 
 	rows, err := s.db.Query(query, userID)
@@ -111,11 +111,11 @@ func (s *DailyBillService) GetPendingBills(userID string) ([]models.DailyBill, e
 func (s *DailyBillService) MarkBillAsPaid(billID string, paymentID string, paymentMethod string) error {
 	query := `UPDATE daily_bills SET
 		status = 'paid',
-		payment_id = $1,
-		payment_method = $2,
-		paid_at = $3,
-		updated_at = $4
-		WHERE id = $5`
+		payment_id = ?,
+		payment_method = ?,
+		paid_at = ?,
+		updated_at = ?
+		WHERE id = ?`
 
 	now := time.Now()
 	_, err := s.db.Exec(query, paymentID, paymentMethod, now, now, billID)
@@ -129,12 +129,13 @@ func (s *DailyBillService) MarkBillAsPaid(billID string, paymentID string, payme
 // GenerateDailyBills generates bills for all users for a specific date
 func (s *DailyBillService) GenerateDailyBills(billDate time.Time) error {
 	date := time.Date(billDate.Year(), billDate.Month(), billDate.Day(), 0, 0, 0, 0, billDate.Location())
+	nextDate := date.AddDate(0, 0, 1)
 
 	// Get all users who had journeys on this date
 	query := `SELECT DISTINCT user_id FROM journey_sessions 
-		WHERE DATE(check_in_time) = $1 AND status = 'completed'`
+		WHERE check_in_time >= ? AND check_in_time < ? AND status = 'completed'`
 
-	rows, err := s.db.Query(query, date)
+	rows, err := s.db.Query(query, date, nextDate)
 	if err != nil {
 		return fmt.Errorf("failed to get users: %w", err)
 	}
@@ -161,14 +162,16 @@ func (s *DailyBillService) GenerateDailyBills(billDate time.Time) error {
 
 // Helper functions
 func (s *DailyBillService) createDailyBill(userID string, billDate time.Time) (*models.DailyBill, error) {
+	nextDate := billDate.AddDate(0, 0, 1)
+
 	// Calculate totals from journey sessions
 	query := `SELECT COUNT(*), COALESCE(SUM(total_distance), 0), COALESCE(SUM(total_fare), 0)
 		FROM journey_sessions
-		WHERE user_id = $1 AND DATE(check_in_time) = $2 AND status = 'completed'`
+		WHERE user_id = ? AND check_in_time >= ? AND check_in_time < ? AND status = 'completed'`
 
 	var totalJourneys int
 	var totalDistance, totalFare float64
-	err := s.db.QueryRow(query, userID, billDate).Scan(&totalJourneys, &totalDistance, &totalFare)
+	err := s.db.QueryRow(query, userID, billDate, nextDate).Scan(&totalJourneys, &totalDistance, &totalFare)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate bill totals: %w", err)
 	}
@@ -178,7 +181,7 @@ func (s *DailyBillService) createDailyBill(userID string, billDate time.Time) (*
 
 	insertQuery := `INSERT INTO daily_bills 
 		(id, user_id, bill_date, total_journeys, total_distance, total_fare, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)`
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
 
 	_, err = s.db.Exec(insertQuery, billID, userID, billDate, totalJourneys, totalDistance, totalFare, now, now)
 	if err != nil {
@@ -207,14 +210,16 @@ func (s *DailyBillService) createDailyBill(userID string, billDate time.Time) (*
 }
 
 func (s *DailyBillService) getJourneysForBill(userID string, billDate time.Time) ([]models.JourneySession, error) {
+	nextDate := billDate.AddDate(0, 0, 1)
+
 	query := `SELECT id, user_id, qr_code, check_in_time, check_out_time, check_in_stop_id, check_out_stop_id,
 		check_in_lat, check_in_lon, check_out_lat, check_out_lon, status, routes_used, total_distance, total_fare,
 		created_at, updated_at
 		FROM journey_sessions
-		WHERE user_id = $1 AND DATE(check_in_time) = $2 AND status = 'completed'
+		WHERE user_id = ? AND check_in_time >= ? AND check_in_time < ? AND status = 'completed'
 		ORDER BY check_in_time`
 
-	rows, err := s.db.Query(query, userID, billDate)
+	rows, err := s.db.Query(query, userID, billDate, nextDate)
 	if err != nil {
 		return nil, err
 	}
@@ -259,4 +264,3 @@ func (s *DailyBillService) getJourneysForBill(userID string, billDate time.Time)
 
 	return journeys, nil
 }
-

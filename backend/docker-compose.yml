@@ -1,31 +1,27 @@
 services:
   postgres:
-    # Using postgis/postgis which supports multi-arch (ARM64/AMD64)
-    # Docker will automatically select the correct architecture
-    image: postgis/postgis:14-3.2
-    container_name: transit_postgres
+    image: postgis/postgis:16-3.4
+    container_name: traveller_postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: transit_db
+      POSTGRES_USER: traveller
+      POSTGRES_PASSWORD: traveller
+      POSTGRES_DB: traveller
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-      - ./migrations:/docker-entrypoint-initdb.d/migrations
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U traveller -d traveller"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
     networks:
       - transit_network
 
   redis:
     # Redis Alpine images support ARM64 natively
     image: redis:7-alpine
-    container_name: transit_redis
+    container_name: traveller_redis
     ports:
       - "6379:6379"
     volumes:
@@ -39,19 +35,12 @@ services:
     networks:
       - transit_network
 
-  # Optional: pgAdmin for database management
-  # Note: pgAdmin may need AMD64 emulation on ARM64
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    platform: linux/amd64
-    container_name: transit_pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@transit.local
-      PGADMIN_DEFAULT_PASSWORD: admin
+  # Optional: Adminer for database management
+  adminer:
+    image: adminer:4
+    container_name: traveller_adminer
     ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
+      - "8081:8080"
     depends_on:
       - postgres
     networks:
@@ -60,7 +49,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  pgadmin_data:
 
 networks:
   transit_network:

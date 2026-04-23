@@ -32,6 +32,28 @@ func (h *RouteHandler) GetRoute(c *gin.Context) {
 	c.JSON(http.StatusOK, route)
 }
 
+func (h *RouteHandler) GetRouteDetail(c *gin.Context) {
+	routeID := c.Param("id")
+	if routeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "route id is required"})
+		return
+	}
+
+	tripLimitStr := c.DefaultQuery("trip_limit", "12")
+	tripLimit, err := strconv.Atoi(tripLimitStr)
+	if err != nil || tripLimit < 1 || tripLimit > 100 {
+		tripLimit = 12
+	}
+
+	detail, err := h.routeService.GetDetail(routeID, tripLimit)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "route not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, detail)
+}
+
 func (h *RouteHandler) ListRoutes(c *gin.Context) {
 	limitStr := c.DefaultQuery("limit", "50")
 	offsetStr := c.DefaultQuery("offset", "0")
@@ -127,5 +149,3 @@ func (h *RouteHandler) GetRouteTrips(c *gin.Context) {
 		"count": len(trips),
 	})
 }
-
-

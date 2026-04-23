@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS routes (
     FOREIGN KEY (agency_id) REFERENCES agencies(agency_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_routes_agency_id ON routes(agency_id);
-CREATE INDEX IF NOT EXISTS idx_routes_short_name ON routes(route_short_name);
-CREATE INDEX IF NOT EXISTS idx_routes_type ON routes(route_type);
+CREATE INDEX idx_routes_agency_id ON routes(agency_id);
+CREATE INDEX idx_routes_short_name ON routes(route_short_name);
+CREATE INDEX idx_routes_type ON routes(route_type);
 
 

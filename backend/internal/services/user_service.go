@@ -22,7 +22,7 @@ func NewUserService(db *database.DB) *UserService {
 func (s *UserService) CreateUser(phoneNumber, name string, email *string) (*models.User, error) {
 	// Check if user already exists
 	var existingID string
-	err := s.db.QueryRow("SELECT id FROM users WHERE phone_number = $1", phoneNumber).Scan(&existingID)
+	err := s.db.QueryRow("SELECT id FROM users WHERE phone_number = ?", phoneNumber).Scan(&existingID)
 	if err == nil {
 		return nil, fmt.Errorf("user with phone number %s already exists", phoneNumber)
 	}
@@ -45,7 +45,7 @@ func (s *UserService) CreateUser(phoneNumber, name string, email *string) (*mode
 	}
 
 	query := `INSERT INTO users (id, phone_number, email, name, status, auto_pay_enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.Exec(query,
 		user.ID, user.PhoneNumber, user.Email, user.Name,
@@ -60,7 +60,7 @@ func (s *UserService) CreateUser(phoneNumber, name string, email *string) (*mode
 // GetUserByID retrieves a user by ID
 func (s *UserService) GetUserByID(userID string) (*models.User, error) {
 	query := `SELECT id, phone_number, email, name, status, payment_method, auto_pay_enabled, created_at, updated_at
-		FROM users WHERE id = $1`
+		FROM users WHERE id = ?`
 
 	user := &models.User{}
 	var email sql.NullString
@@ -90,7 +90,7 @@ func (s *UserService) GetUserByID(userID string) (*models.User, error) {
 // GetUserByPhone retrieves a user by phone number
 func (s *UserService) GetUserByPhone(phoneNumber string) (*models.User, error) {
 	query := `SELECT id, phone_number, email, name, status, payment_method, auto_pay_enabled, created_at, updated_at
-		FROM users WHERE phone_number = $1`
+		FROM users WHERE phone_number = ?`
 
 	user := &models.User{}
 	var email sql.NullString
@@ -120,7 +120,7 @@ func (s *UserService) GetUserByPhone(phoneNumber string) (*models.User, error) {
 
 // DeleteUserByPhone deletes a user by phone number (for testing/cleanup)
 func (s *UserService) DeleteUserByPhone(phoneNumber string) error {
-	query := `DELETE FROM users WHERE phone_number = $1`
+	query := `DELETE FROM users WHERE phone_number = ?`
 	result, err := s.db.Exec(query, phoneNumber)
 	if err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)

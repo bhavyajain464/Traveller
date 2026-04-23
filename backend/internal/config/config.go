@@ -20,6 +20,7 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
+	URL      string
 	Host     string
 	Port     string
 	User     string
@@ -48,11 +49,12 @@ func Load() *Config {
 			WriteTimeout: getEnvAsInt("SERVER_WRITE_TIMEOUT", 30),
 		},
 		Database: DatabaseConfig{
+			URL:      getEnv("DATABASE_URL", ""),
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),
-			User:     getEnv("DB_USER", "postgres"),
-			Password: getEnv("DB_PASSWORD", "postgres"),
-			DBName:   getEnv("DB_NAME", "transit_db"),
+			User:     getEnv("DB_USER", "traveller"),
+			Password: getEnv("DB_PASSWORD", "traveller"),
+			DBName:   getEnv("DB_NAME", "traveller"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
 		Redis: RedisConfig{
@@ -82,5 +84,3 @@ func getEnvAsInt(key string, defaultValue int) int {
 	}
 	return defaultValue
 }
-
-

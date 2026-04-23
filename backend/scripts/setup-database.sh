@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Setup script for Delhi Transit Backend Database
+# Setup script for Traveller Backend Database (PostgreSQL + PostGIS)
 # This script sets up the database using Docker Compose
 
 set -e
 
 echo "=========================================="
-echo "Delhi Transit Backend - Database Setup"
+echo "Traveller Backend - Database Setup"
 echo "=========================================="
 echo ""
 
@@ -39,11 +39,10 @@ echo -e "${GREEN}Step 1: Starting Docker containers...${NC}"
 $DOCKER_COMPOSE up -d
 
 echo ""
-echo -e "${GREEN}Step 2: Waiting for PostgreSQL to be ready...${NC}"
-# Wait for PostgreSQL to be ready
+echo -e "${GREEN}Step 2: Waiting for PostgreSQL/PostGIS to be ready...${NC}"
 timeout=60
 counter=0
-until $DOCKER_COMPOSE exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do
+until $DOCKER_COMPOSE exec -T postgres pg_isready -U traveller -d traveller > /dev/null 2>&1; do
     if [ $counter -ge $timeout ]; then
         echo -e "${RED}Error: PostgreSQL did not become ready within ${timeout} seconds${NC}"
         exit 1
@@ -53,28 +52,17 @@ until $DOCKER_COMPOSE exec -T postgres pg_isready -U postgres > /dev/null 2>&1; 
     counter=$((counter + 2))
 done
 echo ""
-echo -e "${GREEN}✓ PostgreSQL is ready${NC}"
+echo -e "${GREEN}✓ PostgreSQL/PostGIS is ready${NC}"
 
 echo ""
 echo -e "${GREEN}Step 3: Running database migrations...${NC}"
-# Run migrations
-MIGRATION_FILES=$(ls migrations/*.up.sql 2>/dev/null | sort)
-if [ -z "$MIGRATION_FILES" ]; then
-    echo -e "${YELLOW}Warning: No migration files found in migrations/ directory${NC}"
-else
-    for migration in $MIGRATION_FILES; do
-        echo "  Running: $(basename $migration)"
-        # Copy migration to container and run it
-        docker cp "$migration" transit_postgres:/tmp/$(basename $migration) 2>/dev/null || true
-        $DOCKER_COMPOSE exec -T postgres psql -U postgres -d transit_db -f /tmp/$(basename $migration) 2>&1 | grep -v "already exists" || true
-    done
-    echo -e "${GREEN}✓ Migrations completed${NC}"
-fi
+DATABASE_URL=${DATABASE_URL:-postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable} go run cmd/migrate/main.go
+echo -e "${GREEN}✓ Migrations completed${NC}"
 
 echo ""
 echo -e "${GREEN}Step 4: Verifying database setup...${NC}"
 # Verify tables exist
-TABLES=$($DOCKER_COMPOSE exec -T postgres psql -U postgres -d transit_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" | tr -d ' ')
+TABLES=$($DOCKER_COMPOSE exec -T postgres psql -U traveller -d traveller -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" | tr -d ' ')
 if [ "$TABLES" -gt 0 ]; then
     echo -e "${GREEN}✓ Database tables created: $TABLES tables found${NC}"
 else
@@ -97,25 +85,22 @@ echo ""
 echo "Database Connection:"
 echo "  Host: localhost"
 echo "  Port: 5432"
-echo "  User: postgres"
-echo "  Password: postgres"
-echo "  Database: transit_db"
+echo "  User: traveller"
+echo "  Password: traveller"
+echo "  Database: traveller"
 echo ""
 echo "Redis Connection:"
 echo "  Host: localhost"
 echo "  Port: 6379"
 echo ""
-echo "pgAdmin (optional):"
-echo "  URL: http://localhost:5050"
-echo "  Email: admin@transit.local"
-echo "  Password: admin"
+echo "Adminer (optional):"
+echo "  URL: http://localhost:8081"
 echo ""
 echo "Next steps:"
 echo "  1. Copy .env.example to .env and update if needed"
 echo "  2. Load GTFS data: go run cmd/loader-delhi/main.go"
 echo "  3. Start the server: go run cmd/server/main.go"
 echo ""
-echo "To stop containers: docker-compose down"
-echo "To view logs: docker-compose logs -f"
+echo "To stop containers: $DOCKER_COMPOSE down"
+echo "To view logs: $DOCKER_COMPOSE logs -f"
 echo ""
-

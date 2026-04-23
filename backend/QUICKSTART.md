@@ -13,13 +13,13 @@ Get the Delhi Transit Backend running in minutes using Docker!
 
 ```bash
 cd backend
-docker-compose up -d
+docker compose up -d
 ```
 
 This starts:
 - PostgreSQL with PostGIS (port 5432)
 - Redis (port 6379)
-- pgAdmin (optional, port 5050)
+- Adminer (optional, port 8081)
 
 ### 2. Run Database Setup Script
 
@@ -49,7 +49,7 @@ cp .env.example .env
 ./scripts/load-delhi-data.sh
 
 # OR manually:
-go run cmd/loader-delhi/main.go
+DATABASE_URL="postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable" go run cmd/loader-delhi/main.go
 ```
 
 ### 5. Start the Server
@@ -66,7 +66,7 @@ The server will start on `http://localhost:8080`
 
 ```bash
 # Connect to PostgreSQL
-docker-compose exec postgres psql -U postgres -d transit_db
+docker compose exec postgres psql -U traveller -d traveller
 
 # List tables
 \dt
@@ -82,7 +82,7 @@ SELECT * FROM agencies;
 
 ```bash
 # Test Redis
-docker-compose exec redis redis-cli ping
+docker compose exec redis redis-cli ping
 # Should return: PONG
 ```
 
@@ -105,29 +105,29 @@ curl -X POST "http://localhost:8080/api/v1/journeys/plan?from_lat=28.6139&from_l
 
 ```bash
 # All services
-docker-compose logs -f
+docker compose logs -f
 
 # Specific service
-docker-compose logs -f postgres
+docker compose logs -f postgres
 ```
 
 ### Stop Services
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ### Restart Services
 
 ```bash
-docker-compose restart
+docker compose restart
 ```
 
 ### Reset Everything (⚠️ Deletes all data)
 
 ```bash
-docker-compose down -v
-docker-compose up -d
+docker compose down -v
+docker compose up -d
 ./scripts/setup-database.sh
 ./scripts/load-delhi-data.sh
 ```
@@ -150,23 +150,20 @@ lsof -i :6379
 
 ```bash
 # Check if container is running
-docker-compose ps
+docker compose ps
 
 # Check logs
-docker-compose logs postgres
+docker compose logs postgres
 
 # Test connection
-docker-compose exec postgres pg_isready -U postgres
+docker compose exec postgres pg_isready -U traveller -d traveller
 ```
 
 ### Migrations Not Running
 
 ```bash
 # Run migrations manually
-cd migrations
-for file in *.up.sql; do
-    docker-compose exec -T postgres psql -U postgres -d transit_db < "$file"
-done
+DATABASE_URL="postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable" go run cmd/migrate/main.go
 ```
 
 ## Next Steps
@@ -180,5 +177,4 @@ done
 
 - Check `README_DOCKER.md` for detailed Docker documentation
 - Check `DELHI_MIGRATION_SUMMARY.md` for data loading information
-- View container logs: `docker-compose logs -f`
-
+- View container logs: `docker compose logs -f`

@@ -16,7 +16,7 @@ func main() {
 	// Load Delhi Metro data
 	metroPath := flag.String("metro", "../DMRC_GTFS", "Path to DMRC GTFS data directory")
 	// Load Delhi Bus data
-	busPath := flag.String("bus", "../GTFS (1)", "Path to Delhi Bus GTFS data directory")
+	busPath := flag.String("bus", "../GTFS", "Path to Delhi Bus GTFS data directory")
 	// Option to load only one dataset
 	loadMetroOnly := flag.Bool("metro-only", false, "Load only metro data")
 	loadBusOnly := flag.Bool("bus-only", false, "Load only bus data")
@@ -25,14 +25,7 @@ func main() {
 	cfg := config.Load()
 
 	// Initialize database
-	db, err := database.New(
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.DBName,
-		cfg.Database.SSLMode,
-	)
+	db, err := database.NewFromConfig(cfg.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -62,23 +55,29 @@ func main() {
 		log.Printf("  Metro: %s", *metroPath)
 		log.Printf("  Bus: %s", *busPath)
 
-		aggregator := gtfs.NewGTFSAggregator()
+		var datasets []*gtfs.GTFSData
 
-		// Add metro feed
+		// Load metro feed
 		if _, err := os.Stat(*metroPath); !os.IsNotExist(err) {
-			if err := aggregator.AddFeed(*metroPath); err != nil {
-				log.Fatalf("Failed to load Metro feed: %v", err)
+			metroParser := gtfs.NewParser(*metroPath)
+			metroData, err := metroParser.Parse()
+			if err != nil {
+				log.Fatalf("Failed to parse Metro GTFS data: %v", err)
 			}
+			datasets = append(datasets, metroData)
 			log.Println("✓ Metro data loaded")
 		} else {
 			log.Printf("Warning: Metro path does not exist: %s", *metroPath)
 		}
 
-		// Add bus feed
+		// Load bus feed
 		if _, err := os.Stat(*busPath); !os.IsNotExist(err) {
-			if err := aggregator.AddFeed(*busPath); err != nil {
-				log.Fatalf("Failed to load Bus feed: %v", err)
+			busParser := gtfs.NewParser(*busPath)
+			busData, err := busParser.Parse()
+			if err != nil {
+				log.Fatalf("Failed to parse Bus GTFS data: %v", err)
 			}
+			datasets = append(datasets, busData)
 			log.Println("✓ Bus data loaded")
 		} else {
 			log.Printf("Warning: Bus path does not exist: %s", *busPath)
@@ -86,7 +85,8 @@ func main() {
 
 		// Merge feeds
 		log.Println("Merging feeds...")
-		mergedData = aggregator.Merge()
+		aggregator := gtfs.NewAggregator()
+		mergedData = aggregator.Merge(datasets...)
 		log.Println("✓ Feeds merged")
 	}
 
@@ -103,7 +103,9 @@ func main() {
 
 	// Load data into database
 	log.Println("Loading data into database...")
-	loader := gtfs.NewLoader(db)
+	// Extract the underlying *sql.DB from the database.DB wrapper
+	sqlDB := db.DB // Access the embedded *sql.DB
+	loader := gtfs.NewLoader(sqlDB)
 	if err := loader.Load(mergedData); err != nil {
 		log.Fatalf("Failed to load data: %v", err)
 	}

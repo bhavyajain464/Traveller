@@ -15,9 +15,9 @@ CREATE TABLE IF NOT EXISTS trips (
     FOREIGN KEY (service_id) REFERENCES calendar(service_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_trips_route_id ON trips(route_id);
-CREATE INDEX IF NOT EXISTS idx_trips_service_id ON trips(service_id);
-CREATE INDEX IF NOT EXISTS idx_trips_direction ON trips(direction_id);
-CREATE INDEX IF NOT EXISTS idx_trips_block ON trips(block_id);
+CREATE INDEX idx_trips_route_id ON trips(route_id);
+CREATE INDEX idx_trips_service_id ON trips(service_id);
+CREATE INDEX idx_trips_direction ON trips(direction_id);
+CREATE INDEX idx_trips_block ON trips(block_id);
 
 

@@ -16,10 +16,10 @@ CREATE TABLE IF NOT EXISTS stop_times (
     FOREIGN KEY (stop_id) REFERENCES stops(stop_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_stop_times_trip_id ON stop_times(trip_id);
-CREATE INDEX IF NOT EXISTS idx_stop_times_stop_id ON stop_times(stop_id);
-CREATE INDEX IF NOT EXISTS idx_stop_times_arrival ON stop_times(arrival_time);
-CREATE INDEX IF NOT EXISTS idx_stop_times_departure ON stop_times(departure_time);
-CREATE INDEX IF NOT EXISTS idx_stop_times_trip_stop ON stop_times(trip_id, stop_id);
+CREATE INDEX idx_stop_times_trip_id ON stop_times(trip_id);
+CREATE INDEX idx_stop_times_stop_id ON stop_times(stop_id);
+CREATE INDEX idx_stop_times_arrival ON stop_times(arrival_time);
+CREATE INDEX idx_stop_times_departure ON stop_times(departure_time);
+CREATE INDEX idx_stop_times_trip_stop ON stop_times(trip_id, stop_id);
 
 

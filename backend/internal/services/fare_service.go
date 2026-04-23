@@ -59,7 +59,7 @@ func NewFareService(db *database.DB) *FareService {
 
 // GetAgencyIDFromRoute gets the agency ID for a given route
 func (s *FareService) GetAgencyIDFromRoute(routeID string) string {
-	query := `SELECT agency_id FROM routes WHERE route_id = $1`
+	query := `SELECT agency_id FROM routes WHERE route_id = ?`
 	var agencyID string
 	err := s.db.QueryRow(query, routeID).Scan(&agencyID)
 	if err != nil {
@@ -128,44 +128,27 @@ func (s *FareService) calculateLegFare(leg models.JourneyLeg, rules FareRules) f
 
 // CalculateDistance calculates distance between two stops in kilometers
 func (s *FareService) CalculateDistance(fromStopID, toStopID string) float64 {
-	query := `SELECT 
-		ST_Distance(
-			(SELECT location FROM stops WHERE stop_id = $1)::geography,
-			(SELECT location FROM stops WHERE stop_id = $2)::geography
-		) / 1000.0 as distance_km`
+	query := `SELECT s1.stop_lat, s1.stop_lon, s2.stop_lat, s2.stop_lon
+		FROM stops s1
+		JOIN stops s2
+		WHERE s1.stop_id = ? AND s2.stop_id = ?`
 
-	var distance float64
-	err := s.db.QueryRow(query, fromStopID, toStopID).Scan(&distance)
-	if err != nil {
-		// Debug: Log the error
-		fmt.Printf("[CalculateDistance] Error calculating distance between stops %s and %s: %v\n", fromStopID, toStopID, err)
-		
-		// Try alternative: use lat/lon directly if location column doesn't exist
-		query2 := `SELECT 
-			ST_Distance(
-				ST_MakePoint(s1.stop_lon, s1.stop_lat)::geography,
-				ST_MakePoint(s2.stop_lon, s2.stop_lat)::geography
-			) / 1000.0 as distance_km
-			FROM stops s1, stops s2
-			WHERE s1.stop_id = $1 AND s2.stop_id = $2`
-		
-		err2 := s.db.QueryRow(query2, fromStopID, toStopID).Scan(&distance)
-		if err2 != nil {
-			fmt.Printf("[CalculateDistance] Alternative query also failed: %v\n", err2)
-			// Fallback: estimate based on stop count (rough approximation)
-			// Assume average 500m between stops
-			return 0.5
-		}
+	var lat1, lon1, lat2, lon2 float64
+	if err := s.db.QueryRow(query, fromStopID, toStopID).Scan(&lat1, &lon1, &lat2, &lon2); err != nil {
+		fmt.Printf("[CalculateDistance] Error getting coordinates for stops %s and %s: %v\n", fromStopID, toStopID, err)
+		// Fallback: assume average 500m between stops
+		return 0.5
 	}
 
-	fmt.Printf("[CalculateDistance] Stop %s to %s: %.3f km\n", fromStopID, toStopID, distance)
-	return distance
+	distanceKm := haversineDistance(lat1, lon1, lat2, lon2) / 1000.0
+	fmt.Printf("[CalculateDistance] Stop %s to %s: %.3f km\n", fromStopID, toStopID, distanceKm)
+	return distanceKm
 }
 
 // getRouteType determines route type from route ID or name
 func (s *FareService) getRouteType(routeID string) string {
 	// Check route name for indicators
-	query := `SELECT route_short_name, route_long_name FROM routes WHERE route_id = $1`
+	query := `SELECT route_short_name, route_long_name FROM routes WHERE route_id = ?`
 	var shortName, longName string
 	err := s.db.QueryRow(query, routeID).Scan(&shortName, &longName)
 	if err != nil {

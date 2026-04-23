@@ -29,6 +29,8 @@ go.work
 # IDE
 .idea/
 .vscode/
+.vite/
+.clinerules/
 *.swp
 *.swo
 *~

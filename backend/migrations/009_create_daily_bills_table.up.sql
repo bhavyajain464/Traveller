@@ -15,9 +15,9 @@ CREATE TABLE IF NOT EXISTS daily_bills (
     UNIQUE(user_id, bill_date)
 );
 
-CREATE INDEX IF NOT EXISTS idx_daily_bills_user_id ON daily_bills(user_id);
-CREATE INDEX IF NOT EXISTS idx_daily_bills_bill_date ON daily_bills(bill_date);
-CREATE INDEX IF NOT EXISTS idx_daily_bills_status ON daily_bills(status);
-CREATE INDEX IF NOT EXISTS idx_daily_bills_user_date ON daily_bills(user_id, bill_date);
+CREATE INDEX idx_daily_bills_user_id ON daily_bills(user_id);
+CREATE INDEX idx_daily_bills_bill_date ON daily_bills(bill_date);
+CREATE INDEX idx_daily_bills_status ON daily_bills(status);
+CREATE INDEX idx_daily_bills_user_date ON daily_bills(user_id, bill_date);
 
 
