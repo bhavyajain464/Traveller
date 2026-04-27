@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../lib/api";
 
@@ -50,7 +50,7 @@ function StopsPage() {
     return () => {
       ignore = true;
     };
-  }, [submittedQuery]);
+  }, [submittedQuery, stopID]);
 
   useEffect(() => {
     let ignore = false;
@@ -97,19 +97,85 @@ function StopsPage() {
     };
   }, [stopID]);
 
+  const nextDeparture = departures[0] || null;
+  const departureSummary = useMemo(() => {
+    if (!departures.length) {
+      return {
+        count: 0,
+        primary: "No live departures loaded",
+        secondary: "Try another stop or search term."
+      };
+    }
+
+    return {
+      count: departures.length,
+      primary: nextDeparture
+        ? `${nextDeparture.route_short_name || nextDeparture.route_long_name || nextDeparture.route_id} leaves at ${nextDeparture.departure_time}`
+        : "Departures loaded",
+      secondary: "Use route detail if you want to inspect the line before you travel."
+    };
+  }, [departures, nextDeparture]);
+
   return (
     <section className="route-page">
-      <div className="page-header">
-        <div>
-          <h2>Stops</h2>
+      <section className="home-hero card">
+        <div className="home-hero-copy">
+          <p className="eyebrow">Departures</p>
+          <h2>Check what leaves from your stop right now.</h2>
           <p className="lead">
-            Browse stops, inspect upcoming departures, and jump from each departure into the matching route detail view.
+            This page is your rider board: search a stop, scan the next departures, and jump into the right route before you commit to the trip.
           </p>
+
+          <div className="hero-actions">
+            <Link className="primary-link" to="/plan">Plan a journey</Link>
+            <Link className="secondary-link" to="/tickets">Open tickets</Link>
+          </div>
+
+          <div className="home-signal-row">
+            <div className="home-signal-pill">
+              <span>Stop results</span>
+              <strong>{stops.length}</strong>
+            </div>
+            <div className="home-signal-pill">
+              <span>Departures loaded</span>
+              <strong>{departureSummary.count}</strong>
+            </div>
+            <div className="home-signal-pill">
+              <span>Next departure</span>
+              <strong>{nextDeparture ? nextDeparture.departure_time : "Waiting"}</strong>
+            </div>
+          </div>
         </div>
-      </div>
+
+        <div className="home-hero-panel">
+          <div className="section-heading">
+            <h3>Current board</h3>
+          </div>
+          <div className="feature-stack">
+            <div>
+              <strong>{selectedStop?.name || "Select a stop"}</strong>
+              <p>{selectedStop?.code || selectedStop?.id || "Search for a stop to load departures."}</p>
+            </div>
+            <div>
+              <strong>{departureSummary.primary}</strong>
+              <p>{departureSummary.secondary}</p>
+            </div>
+            {nextDeparture ? (
+              <div>
+                <strong>Best quick action</strong>
+                <p>Open the route for {nextDeparture.route_short_name || nextDeparture.route_long_name || nextDeparture.route_id} if you want more context before boarding.</p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </section>
 
       <div className="route-shell">
         <aside className="route-list-panel card">
+          <div className="section-heading">
+            <h3>Find a stop</h3>
+          </div>
+
           <form
             className="toolbar"
             onSubmit={(event) => {
@@ -126,9 +192,9 @@ function StopsPage() {
           </form>
 
           {stopsError ? <p className="status-error">{stopsError}</p> : null}
-          {stopsLoading ? <p className="status-muted">Loading stops…</p> : null}
+          {stopsLoading ? <p className="status-muted">Loading nearby stop boards…</p> : null}
 
-          <div className="route-list">
+          <div className="route-list compact-list">
             {stops.map((stop) => (
               <button
                 key={stop.id}
@@ -148,7 +214,7 @@ function StopsPage() {
           {!stopID ? (
             <div className="card route-empty-state">
               <h3>Select a stop</h3>
-              <p>Pick a stop from the list to inspect departures.</p>
+              <p>Pick a stop from the list to see the departure board.</p>
             </div>
           ) : null}
 
@@ -162,7 +228,7 @@ function StopsPage() {
             <>
               <section className="card route-hero">
                 <div>
-                  <p className="eyebrow">stop</p>
+                  <p className="eyebrow">Selected stop</p>
                   <h3>{selectedStop.name}</h3>
                   <p className="route-subtitle">{selectedStop.code || selectedStop.id}</p>
                 </div>
@@ -176,38 +242,52 @@ function StopsPage() {
                     <strong>{selectedStop.zone_id || "n/a"}</strong>
                   </div>
                   <div>
-                    <span>Type</span>
-                    <strong>{selectedStop.location_type}</strong>
-                  </div>
-                  <div>
                     <span>Wheelchair</span>
                     <strong>{selectedStop.wheelchair_boarding}</strong>
+                  </div>
+                  <div>
+                    <span>Board state</span>
+                    <strong>{departures.length ? "Live" : "Quiet"}</strong>
                   </div>
                 </div>
               </section>
 
               <section className="card">
-                <h3>Departures</h3>
+                <div className="section-heading">
+                  <h3>Next departures</h3>
+                  <span>{departuresLoading ? "Refreshing..." : `${departures.length} listed`}</span>
+                </div>
+
                 {departuresError ? <p className="status-error">{departuresError}</p> : null}
                 {departuresLoading ? <p className="status-muted">Loading departures…</p> : null}
 
                 <div className="trip-list">
                   {departures.map((departure) => (
-                    <div key={`${departure.trip_id}-${departure.departure_time}`} className="trip-row">
-                      <strong>{departure.route_short_name || departure.route_long_name || departure.route_id}</strong>
+                    <div key={`${departure.trip_id}-${departure.departure_time}`} className="trip-row departure-card">
+                      <div className="departure-card-head">
+                        <div>
+                          <p className="eyebrow">Route</p>
+                          <strong>{departure.route_short_name || departure.route_long_name || departure.route_id}</strong>
+                        </div>
+                        <span className="departure-time-pill">{departure.departure_time}</span>
+                      </div>
                       <p>
-                        {departure.departure_time} to {departure.arrival_time}
+                        Arrives by {departure.arrival_time}
                       </p>
                       <small>{departure.headsign || departure.trip_id}</small>
                       <div className="inline-actions">
                         <Link to={`/routes/${encodeURIComponent(departure.route_id)}`}>Open route detail</Link>
+                        <Link to="/plan">Plan a full trip</Link>
                       </div>
                     </div>
                   ))}
                 </div>
 
                 {!departuresLoading && departures.length === 0 && !departuresError ? (
-                  <p className="status-muted">No departures returned for this stop right now.</p>
+                  <div className="empty-bills-state">
+                    <strong>No departures returned right now</strong>
+                    <p className="lead">Try another nearby stop or search a larger station.</p>
+                  </div>
                 ) : null}
               </section>
             </>

@@ -4,9 +4,9 @@ import { apiRequest } from "../lib/api";
 import { saveActiveJourney } from "../lib/tickets";
 
 const PLANNER_SIGNALS = [
-  { label: "Planner", value: "In-memory snapshot" },
-  { label: "Search", value: "Round-based routing" },
-  { label: "Interchange", value: "Footpath aware" }
+  { label: "Trip search", value: "Live stop search" },
+  { label: "Connections", value: "Transfer-aware" },
+  { label: "Next step", value: "Save to tickets" }
 ];
 
 function JourneysPage() {
@@ -74,6 +74,28 @@ function JourneysPage() {
   const selectedSummary = useMemo(() => summarizeOption(selectedOption), [selectedOption]);
   const plannerHighlights = useMemo(() => buildPlannerHighlights(options, selectedOption), [options, selectedOption]);
   const serviceNotice = useMemo(() => buildServiceNotice(options, plannerMeta), [options, plannerMeta]);
+  const plannerSnapshot = useMemo(() => {
+    if (selectedOption && selectedSummary) {
+      return {
+        title: `Best fit right now: ${selectedOption.duration} min`,
+        body: selectedSummary.routeNames
+          ? `${selectedSummary.routeNames} with ${selectedOption.transfers} transfer${selectedOption.transfers === 1 ? "" : "s"}.`
+          : "Walking-only option selected right now."
+      };
+    }
+
+    if (originPlace && destinationPlace) {
+      return {
+        title: "Ready to search",
+        body: `Look for trips from ${originPlace.title} to ${destinationPlace.title}.`
+      };
+    }
+
+    return {
+      title: "Pick where you are going",
+      body: "Search for an origin and destination, then compare a few clear trip options before you start the ride."
+    };
+  }, [destinationPlace, originPlace, selectedOption, selectedSummary]);
 
   async function planJourney() {
     if (!originPlace || !destinationPlace) {
@@ -144,9 +166,9 @@ function JourneysPage() {
       <section className="planner-hero card">
         <div className="planner-hero-copy">
           <p className="eyebrow">Journey Planner</p>
-          <h2>Plan on the same lines as the end-goal routing stack.</h2>
+          <h2>Choose the trip you want to take.</h2>
           <p className="lead">
-            This screen now reflects the backend shift to an in-memory timetable snapshot, round-based search, and interchange footpaths. You can inspect a connection the way a rider would, while still seeing the planner signals we care about during the transition.
+            Search two places, compare a few connection options, and save the one that should become your live ticket. The planner still benefits from the newer routing work, but the screen now stays focused on travel decisions.
           </p>
           <div className="planner-signal-row">
             {PLANNER_SIGNALS.map((signal) => (
@@ -160,8 +182,14 @@ function JourneysPage() {
 
         <div className="planner-status-card">
           <div className="planner-status-header">
-            <strong>Routing status</strong>
+            <strong>Trip snapshot</strong>
             <span>{options.length ? `${options.length} options` : "Awaiting query"}</span>
+          </div>
+          <div className="feature-stack">
+            <div>
+              <strong>{plannerSnapshot.title}</strong>
+              <p>{plannerSnapshot.body}</p>
+            </div>
           </div>
           <div className="planner-status-grid">
             {plannerHighlights.map((item) => (
@@ -175,6 +203,11 @@ function JourneysPage() {
       </section>
 
       <section className="card planner-form-card">
+        <div className="section-heading">
+          <h3>Where do you want to go?</h3>
+          <span>{canPlan ? "Both places selected" : "Choose both places to search"}</span>
+        </div>
+
         <div className="planner-grid">
           <StopPicker
             label="From"
@@ -257,8 +290,9 @@ function JourneysPage() {
 
         <div className="toolbar">
           <button type="button" className="primary-button" disabled={!canPlan || isPlanning} onClick={planJourney}>
-            {isPlanning ? "Searching rounds..." : "Plan Journey"}
+            {isPlanning ? "Finding trips..." : "Find trips"}
           </button>
+          <Link className="secondary-link" to="/departures">Browse departures instead</Link>
         </div>
 
         {searchError ? <p className="status-error">{searchError}</p> : null}
@@ -270,6 +304,46 @@ function JourneysPage() {
           </div>
         ) : null}
       </section>
+
+      {!options.length && !plannerError ? (
+        <div className="dashboard-grid">
+          <section className="card">
+            <div className="section-heading">
+              <h3>How to use this page</h3>
+            </div>
+            <div className="feature-stack">
+              <div>
+                <strong>1. Search the two ends of the trip</strong>
+                <p>Choose specific stops or stations when you know them, or start broader and narrow down.</p>
+              </div>
+              <div>
+                <strong>2. Compare a few clear options</strong>
+                <p>Look at travel time, transfer count, and walking before you lock in the trip.</p>
+              </div>
+              <div>
+                <strong>3. Save the one you want</strong>
+                <p>The saved journey becomes the handoff into Tickets when you are ready to travel.</p>
+              </div>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="section-heading">
+              <h3>Best starting point</h3>
+            </div>
+            <div className="feature-stack">
+              <div>
+                <strong>Use planner when you need the full trip</strong>
+                <p>This is the right screen when you are comparing end-to-end choices, not just the next vehicle from one stop.</p>
+              </div>
+              <div>
+                <strong>Use departures when you already know the stop</strong>
+                <p>If you are already at the station, the departures page may be the faster way to decide.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {options.length > 0 ? (
         <section className="journey-options">
@@ -284,7 +358,7 @@ function JourneysPage() {
               >
                 <div className="journey-card-top">
                   <div className="section-heading">
-                    <h3>Connection {index + 1}</h3>
+                    <h3>{index === 0 ? "Recommended trip" : `Option ${index + 1}`}</h3>
                     <span>{formatDateTime(summary.windowStart)} → {formatDateTime(summary.windowEnd)}</span>
                   </div>
                   <div className="journey-summary-chips">
@@ -321,11 +395,12 @@ function JourneysPage() {
 
                 <div className="toolbar">
                   <button type="button" className="primary-button" onClick={() => setCurrentJourney(option)}>
-                    Set As Current Journey
+                    Save this trip
                   </button>
                   <button type="button" className="ghost-button" onClick={() => setSelectedOption(option)}>
-                    Focus this connection
+                    Focus this option
                   </button>
+                  <Link className="secondary-link" to="/tickets">Go to tickets</Link>
                 </div>
               </article>
             );
@@ -336,7 +411,7 @@ function JourneysPage() {
       {journeySaved ? (
         <section className="card ticket-card planner-saved-card">
           <div className="section-heading">
-            <h3>Current journey saved</h3>
+            <h3>Trip saved for ticketing</h3>
             {selectedSummary?.primaryRouteID ? (
               <Link to={`/routes/${encodeURIComponent(selectedSummary.primaryRouteID)}`}>Open main route</Link>
             ) : null}
@@ -348,8 +423,12 @@ function JourneysPage() {
             <p>{journeySaved.createdAtLabel}</p>
             <p>{journeySaved.routeSummary || selectedSummary?.routeNames || "Walking-only route"}</p>
             <p className="status-muted">
-              Check in from Tickets to generate a live QR with the actual time and location.
+              Open Tickets next to create the live QR when you are actually ready to begin the ride.
             </p>
+          </div>
+          <div className="hero-actions">
+            <Link className="primary-link" to="/tickets">Open tickets</Link>
+            <Link className="secondary-link" to="/departures">Check departures</Link>
           </div>
         </section>
       ) : null}

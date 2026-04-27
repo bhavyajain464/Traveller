@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import QRCodePreview from "../components/QRCodePreview";
 import { useAuth } from "../lib/auth";
@@ -65,7 +65,7 @@ function TicketsPage() {
         setActiveSession(hydrated);
         await refreshBoardingState(hydrated.id, ignore);
       } catch {
-        // Preserve local state if the refresh fails.
+        // Preserve local state if refresh fails.
       }
     }
 
@@ -103,7 +103,7 @@ function TicketsPage() {
         setActiveBoarding(heartbeat.active_boarding || null);
         setTrackingMessage(heartbeat.message || "");
       } catch {
-        // Leave the last good tracking state in place if background sync fails.
+        // Keep last good state on background sync failure.
       }
     }
 
@@ -146,7 +146,7 @@ function TicketsPage() {
       setActiveSession(nextSession);
       setBoardings([]);
       setActiveBoarding(null);
-      setTrackingMessage("Ticket is active. Tracking is now watching for your next boarding.");
+      setTrackingMessage("Ticket is active. Tracking is now watching for your first boarding.");
       await refreshPendingBills();
     } catch (checkInError) {
       setError(checkInError.message || "Check-in failed.");
@@ -197,7 +197,7 @@ function TicketsPage() {
       const payload = await apiRequest("/bills/me/pending");
       setPendingBills(payload.bills || []);
     } catch {
-      // Ignore billing refresh errors on the rider page.
+      // Ignore billing refresh errors on rider page.
     }
   }
 
@@ -207,26 +207,140 @@ function TicketsPage() {
     boardings,
     overdueBills
   });
+  const outstandingTotal = sumPendingBills(overdueBills);
+  const riderSnapshot = useMemo(() => {
+    if (overdueBills.length > 0 && !activeSession) {
+      return {
+        title: "Travel blocked until payment clears",
+        body: `${overdueBills.length} overdue daily bill${overdueBills.length === 1 ? "" : "s"} must be paid before you begin another travel day.`
+      };
+    }
+
+    if (activeSession) {
+      return {
+        title: trackingState.label,
+        body: trackingState.description
+      };
+    }
+
+    if (activeJourney) {
+      return {
+        title: "Journey saved and ready",
+        body: `Your route from ${activeJourney.fromStopName} to ${activeJourney.toStopName} is ready to turn into a live ticket.`
+      };
+    }
+
+    return {
+      title: "Ready for the next ride",
+      body: "Start one live ticket when you begin traveling and let the session stay active until you check out."
+    };
+  }, [activeJourney, activeSession, overdueBills, trackingState]);
 
   return (
     <section className="route-page">
-      <div className="page-header">
-        <div>
-          <h2>Tickets</h2>
-          <p className="lead">
-            Your QR ticket stays active for inspection while background tracking determines the boardings that feed billing.
-          </p>
+      <section className="home-hero card">
+        <div className="home-hero-copy">
+          <p className="eyebrow">Tickets</p>
+          <h2>{riderSnapshot.title}</h2>
+          <p className="lead">{riderSnapshot.body}</p>
+
+          <div className="hero-actions">
+            {activeSession ? (
+              <button type="button" className="primary-button" disabled={busyAction === "checkout"} onClick={checkOut}>
+                {busyAction === "checkout" ? "Ending ride..." : "End ticket"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busyAction === "checkin" || overdueBills.length > 0}
+                onClick={checkIn}
+              >
+                {busyAction === "checkin" ? "Starting ticket..." : "Start ticket"}
+              </button>
+            )}
+            <Link className="secondary-link" to="/plan">Plan a journey</Link>
+          </div>
+
+          <div className="home-signal-row">
+            <div className="home-signal-pill">
+              <span>Ticket state</span>
+              <strong>{activeSession ? trackingState.label : "Not checked in"}</strong>
+            </div>
+            <div className="home-signal-pill">
+              <span>Tracked segments</span>
+              <strong>{boardings.length}</strong>
+            </div>
+            <div className="home-signal-pill">
+              <span>Pending bills</span>
+              <strong>{overdueBills.length ? formatCurrency(outstandingTotal) : "All clear"}</strong>
+            </div>
+          </div>
         </div>
-      </div>
+
+        <div className="home-hero-panel">
+          <div className="section-heading">
+            <h3>Travel status</h3>
+            {activeSession || activeJourney ? (
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  clearActiveSession();
+                  clearActiveJourney();
+                  window.location.reload();
+                }}
+              >
+                Reset local view
+              </button>
+            ) : null}
+          </div>
+
+          {activeSession ? (
+            <div className="feature-stack">
+              <div>
+                <strong>Checked in</strong>
+                <p>{activeSession.checkInTimeLabel}</p>
+              </div>
+              <div>
+                <strong>Boarding state</strong>
+                <p>{trackingState.description}</p>
+              </div>
+              <div>
+                <strong>Inspector view</strong>
+                <p>Your QR is live and valid until checkout completes.</p>
+              </div>
+            </div>
+          ) : activeJourney ? (
+            <div className="feature-stack">
+              <div>
+                <strong>Saved trip</strong>
+                <p>{activeJourney.fromStopName} to {activeJourney.toStopName}</p>
+              </div>
+              <div>
+                <strong>Best next step</strong>
+                <p>Start the ticket when you reach the stop and are ready to board.</p>
+              </div>
+            </div>
+          ) : (
+            <div className="feature-stack">
+              <div>
+                <strong>No active ride</strong>
+                <p>Plan a route or go straight to departures if you already know the stop.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
 
       {error ? <section className="card"><p className="status-error">{error}</p></section> : null}
 
       {overdueBills.length > 0 && !activeSession ? (
         <section className="card selected-card">
-          <p className="eyebrow">Billing Gate</p>
-          <h3>Overdue bill pending</h3>
+          <p className="eyebrow">Billing gate</p>
+          <h3>Payment needed before the next trip</h3>
           <p className="lead">
-            New travel is blocked until the outstanding bill from a previous day is paid.
+            New travel is blocked until the overdue daily bill from a previous day is settled.
           </p>
           <div className="route-meta-grid">
             <div>
@@ -234,7 +348,7 @@ function TicketsPage() {
               <span>Overdue bill{overdueBills.length === 1 ? "" : "s"}</span>
             </div>
             <div>
-              <strong>{formatCurrency(sumPendingBills(overdueBills))}</strong>
+              <strong>{formatCurrency(outstandingTotal)}</strong>
               <span>Outstanding total</span>
             </div>
           </div>
@@ -246,110 +360,150 @@ function TicketsPage() {
       ) : null}
 
       {activeSession ? (
-        <section className="card ticket-card full-ticket-card tracking-ticket-card">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Active Ticket</p>
-              <h3>{trackingState.label}</h3>
-            </div>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                clearActiveSession();
-                window.location.reload();
-              }}
-            >
-              Reset local view
-            </button>
-          </div>
-
-          <div className="tracking-status-banner">
-            <strong>{trackingState.label}</strong>
-            <span>{trackingState.description}</span>
-          </div>
-
-          <div className="ticket-preview tracking-ticket-preview">
-            <div className="ticket-copy">
-              <p className="eyebrow">Session-linked QR</p>
-              <strong>{user?.name}</strong>
-              <p>{activeSession.checkInTimeLabel}</p>
-              <p>{activeSession.checkInLocationLabel}</p>
-              <p className="status-muted">Session ID: {activeSession.id}</p>
-              {trackingMessage ? <p className="status-muted">{trackingMessage}</p> : null}
+        <>
+          <section className="card ticket-card full-ticket-card tracking-ticket-card">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Live ticket</p>
+                <h3>{trackingState.label}</h3>
+              </div>
             </div>
 
-            <div className="tracking-qr-panel">
-              <QRCodePreview value={activeSession.qrCode} size={220} />
-              <p className="status-muted">Show this QR to inspectors while tracking runs in the background.</p>
+            <div className="tracking-status-banner">
+              <strong>{trackingState.label}</strong>
+              <span>{trackingState.description}</span>
             </div>
-          </div>
 
-          <div className="route-meta-grid">
-            <div>
-              <strong>{boardings.length}</strong>
-              <span>Total tracked segments</span>
-            </div>
-            <div>
-              <strong>{activeBoarding?.RouteID || "Waiting"}</strong>
-              <span>Current route</span>
-            </div>
-            <div>
-              <strong>{activeBoarding?.VehicleID || "No vehicle yet"}</strong>
-              <span>Current vehicle</span>
-            </div>
-          </div>
+            <div className="ticket-preview tracking-ticket-preview">
+              <div className="ticket-copy">
+                <p className="eyebrow">Inspection QR</p>
+                <strong>{user?.name}</strong>
+                <p>{activeSession.checkInTimeLabel}</p>
+                <p>{activeSession.checkInLocationLabel}</p>
+                <p className="status-muted">Session ID: {activeSession.id}</p>
+                {trackingMessage ? <p className="status-muted">{trackingMessage}</p> : null}
+              </div>
 
-          {boardings.length > 0 ? (
-            <div className="tracking-segment-list">
-              {boardings.map((boarding, index) => (
-                <div key={boarding.id} className="tracking-segment-item">
-                  <strong>Segment {index + 1}: {boarding.route_id}</strong>
-                  <span>
-                    Boarded {formatDateTime(boarding.boarding_time)}
-                    {boarding.alighting_time ? `, alighted ${formatDateTime(boarding.alighting_time)}` : ", currently active"}
-                  </span>
+              <div className="tracking-qr-panel">
+                <QRCodePreview value={activeSession.qrCode} size={220} />
+                <p className="status-muted">Show this QR during inspection while background tracking continues.</p>
+              </div>
+            </div>
+
+            <div className="route-meta-grid">
+              <div>
+                <strong>{boardings.length}</strong>
+                <span>Total tracked segments</span>
+              </div>
+              <div>
+                <strong>{activeBoarding?.RouteID || "Waiting"}</strong>
+                <span>Current route</span>
+              </div>
+              <div>
+                <strong>{activeBoarding?.VehicleID || "No vehicle yet"}</strong>
+                <span>Current vehicle</span>
+              </div>
+            </div>
+          </section>
+
+          <div className="dashboard-grid">
+            <section className="card">
+              <div className="section-heading">
+                <h3>Ride timeline</h3>
+              </div>
+              {boardings.length > 0 ? (
+                <div className="tracking-segment-list">
+                  {boardings.map((boarding, index) => (
+                    <div key={boarding.id} className="tracking-segment-item">
+                      <strong>Segment {index + 1}: {boarding.route_id}</strong>
+                      <span>
+                        Boarded {formatDateTime(boarding.boarding_time)}
+                        {boarding.alighting_time ? `, alighted ${formatDateTime(boarding.alighting_time)}` : ", currently active"}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="status-muted">
-              No vehicle matched yet. The ticket is live and tracking will attach boardings as movement data arrives.
-            </p>
-          )}
+              ) : (
+                <div className="empty-bills-state">
+                  <strong>Waiting for the first boarding match</strong>
+                  <p className="lead">Your QR is already valid. Tracking will attach the ride as movement data arrives.</p>
+                </div>
+              )}
+            </section>
 
-          <div className="toolbar">
-            <button type="button" className="primary-button" disabled={busyAction === "checkout"} onClick={checkOut}>
-              {busyAction === "checkout" ? "Ending tracking..." : "End Tracking And Close Ticket"}
-            </button>
-            <Link className="secondary-link" to="/plan">Plan a trip</Link>
-            <Link className="secondary-link" to="/departures">Browse departures</Link>
+            <section className="card">
+              <div className="section-heading">
+                <h3>While your ticket is live</h3>
+              </div>
+              <div className="feature-stack">
+                <div>
+                  <strong>Keep the QR ready</strong>
+                  <p>The session-linked code stays available throughout the ride for inspection.</p>
+                </div>
+                <div>
+                  <strong>Transfers stay inside the same session</strong>
+                  <p>You do not need to start a new ticket when the trip changes vehicles.</p>
+                </div>
+                <div>
+                  <strong>Check out when you arrive</strong>
+                  <p>Ending the ticket closes tracking and lets billing wrap the trip cleanly.</p>
+                </div>
+              </div>
+              <div className="hero-actions">
+                <button type="button" className="primary-button" disabled={busyAction === "checkout"} onClick={checkOut}>
+                  {busyAction === "checkout" ? "Ending ride..." : "End ticket"}
+                </button>
+                <Link className="secondary-link" to="/departures">Browse departures</Link>
+              </div>
+            </section>
           </div>
-        </section>
+        </>
       ) : (
-        <section className="card empty-state-card">
-          <h3>No active ticket yet</h3>
-          <p className="lead">
-            Start tracking once, get a QR ticket for inspection, and let boardings and alightings drive billing in the background.
-          </p>
-          {activeJourney ? (
-            <p className="status-muted">
-              Planned journey: {activeJourney.fromStopName} to {activeJourney.toStopName}
+        <div className="dashboard-grid">
+          <section className="card empty-state-card">
+            <h3>No active ticket yet</h3>
+            <p className="lead">
+              Start one live ticket when you begin moving, keep the QR ready for inspection, and let the session track the ride in the background.
             </p>
-          ) : null}
-          <div className="hero-actions">
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busyAction === "checkin" || overdueBills.length > 0}
-              onClick={checkIn}
-            >
-              {busyAction === "checkin" ? "Starting tracking..." : "Start Tracking And Generate Ticket"}
-            </button>
-            <Link className="secondary-link" to="/plan">Plan a trip</Link>
-            <Link className="secondary-link" to="/departures">Browse departures</Link>
-          </div>
-        </section>
+            {activeJourney ? (
+              <p className="status-muted">
+                Planned journey: {activeJourney.fromStopName} to {activeJourney.toStopName}
+              </p>
+            ) : null}
+            <div className="hero-actions">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busyAction === "checkin" || overdueBills.length > 0}
+                onClick={checkIn}
+              >
+                {busyAction === "checkin" ? "Starting ticket..." : "Start ticket"}
+              </button>
+              <Link className="secondary-link" to="/plan">Plan a trip</Link>
+              <Link className="secondary-link" to="/departures">Browse departures</Link>
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="section-heading">
+              <h3>How tickets work</h3>
+            </div>
+            <div className="feature-stack">
+              <div>
+                <strong>Plan first if you want context</strong>
+                <p>Choose a route before check-in when you want the ticket to inherit the trip shape you picked.</p>
+              </div>
+              <div>
+                <strong>Check in once</strong>
+                <p>The backend creates one live QR session instead of making you buy a new ticket for every leg.</p>
+              </div>
+              <div>
+                <strong>Pay at the daily level</strong>
+                <p>Billing is attached after travel rather than interrupting you at the moment you board.</p>
+              </div>
+            </div>
+          </section>
+        </div>
       )}
     </section>
   );
@@ -378,14 +532,14 @@ function getTrackingState({ activeSession, activeBoarding, boardings, overdueBil
   if (!activeSession) {
     return {
       label: "Ready",
-      description: "Start tracking when you begin moving."
+      description: "Start the ticket when you begin moving."
     };
   }
 
   if (activeBoarding && boardings.length > 1) {
     return {
       label: "Transferred",
-      description: "Your QR is still valid and tracking has linked more than one segment to this session."
+      description: "Your QR stays valid while more than one ride segment is linked to the same session."
     };
   }
 
@@ -399,7 +553,7 @@ function getTrackingState({ activeSession, activeBoarding, boardings, overdueBil
   if (boardings.length > 0) {
     return {
       label: "Ride ended",
-      description: "Your last segment has ended. Stay checked in if you expect another transfer."
+      description: "Your last segment ended. Stay checked in if another transfer is still coming."
     };
   }
 
@@ -417,6 +571,7 @@ function toSessionState(session, qrCodeOverride) {
     checkInLocationLabel: `${Number(session.check_in_lat).toFixed(5)}, ${Number(session.check_in_lon).toFixed(5)}`
   };
 }
+
 function sumPendingBills(bills) {
   return bills.reduce((total, bill) => total + Number(bill.total_fare || 0), 0);
 }
