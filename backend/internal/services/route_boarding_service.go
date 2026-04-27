@@ -244,12 +244,9 @@ func (s *RouteBoardingService) AlightRouteWithExecutor(exec repository.DBTX, req
 		boarding.BoardingStopID, *stopID, distance)
 
 	agencyID := s.fareService.GetAgencyIDFromRoute(boarding.RouteID)
-	if agencyID == "" {
-		agencyID = "DIMTS" // Default to Delhi bus if not found
-	}
 	fmt.Printf("[AlightRoute] Route: %s, Agency: %s\n", boarding.RouteID, agencyID)
 
-	rules := s.fareService.GetFareRulesForAgency(agencyID)
+	rules := s.fareService.ResolveFareRulesForRoute(boarding.RouteID)
 	fmt.Printf("[AlightRoute] Fare rules: BaseFare=%.2f, FarePerKm=%.2f\n", rules.BaseFare, rules.FarePerKm)
 
 	fare := s.fareService.CalculateRouteSegmentFare(boarding.RouteID, boarding.BoardingStopID, *stopID, distance, rules)

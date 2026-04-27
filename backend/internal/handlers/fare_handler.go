@@ -31,11 +31,7 @@ func (h *FareHandler) CalculateFare(c *gin.Context) {
 		return
 	}
 
-	agencyID := h.fareService.GetAgencyIDFromRoute(routeID)
-	if agencyID == "" {
-		agencyID = "DIMTS" // Default to Delhi bus if not found
-	}
-	rules := h.fareService.GetFareRulesForAgency(agencyID)
+	rules := h.fareService.ResolveFareRulesForRoute(routeID)
 	fare, err := h.fareService.GetRouteFare(routeID, fromStopID, toStopID, rules)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to calculate fare"})
@@ -62,11 +58,7 @@ func (h *FareHandler) GetRouteFare(c *gin.Context) {
 	fromStopID := c.Query("from_stop_id")
 	toStopID := c.Query("to_stop_id")
 
-	agencyID := h.fareService.GetAgencyIDFromRoute(routeID)
-	if agencyID == "" {
-		agencyID = "DIMTS" // Default to Delhi bus if not found
-	}
-	rules := h.fareService.GetFareRulesForAgency(agencyID)
+	rules := h.fareService.ResolveFareRulesForRoute(routeID)
 	fare, err := h.fareService.GetRouteFare(routeID, fromStopID, toStopID, rules)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get fare"})
@@ -88,4 +80,3 @@ func (h *FareHandler) GetRouteFare(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
-

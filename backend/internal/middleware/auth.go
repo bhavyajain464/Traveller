@@ -22,7 +22,10 @@ func RequireAuth(authService *services.AuthService) gin.HandlerFunc {
 			return
 		}
 
-		session, err := authService.GetSessionByToken(token)
+		session, err := authService.GetSessionByToken(token, services.AuthAccessMetadata{
+			ClientIP:  c.ClientIP(),
+			UserAgent: c.GetHeader("User-Agent"),
+		})
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired session"})
 			return

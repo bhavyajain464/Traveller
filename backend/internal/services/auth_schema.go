@@ -29,13 +29,20 @@ func EnsureAuthSchema(db *database.DB) error {
 			token_hash VARCHAR(255) UNIQUE NOT NULL,
 			provider VARCHAR(50) NOT NULL,
 			expires_at TIMESTAMP NOT NULL,
+			last_used_at TIMESTAMP,
+			client_ip TEXT,
+			user_agent TEXT,
 			revoked_at TIMESTAMP,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
+		`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP`,
+		`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS client_ip TEXT`,
+		`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_last_used_at ON auth_sessions(last_used_at)`,
 	}
 
 	for _, stmt := range statements {

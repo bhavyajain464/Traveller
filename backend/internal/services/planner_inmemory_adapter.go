@@ -13,6 +13,12 @@ import (
 	"indian-transit-backend/internal/models"
 )
 
+const (
+	plannerMetroBusFootpathRadiusMeters = 500.0
+	plannerWalkingMetersPerSecond       = 1.4
+	plannerMinimumFootpathSeconds       = 60
+)
+
 // InMemoryJourneyPlannerAdapter owns an in-process timetable snapshot. Direct
 // journey discovery now runs against that snapshot, while transfer-heavy cases
 // still fall back to the SQL planner until the full in-memory engine lands.
@@ -222,6 +228,10 @@ func (a *InMemoryJourneyPlannerAdapter) Snapshot() *PlannerSnapshot {
 }
 
 func (a *InMemoryJourneyPlannerAdapter) ReloadSnapshot() error {
+	if err := a.syncMetroBusFootpaths(); err != nil {
+		return fmt.Errorf("sync planner footpaths: %w", err)
+	}
+
 	stops, err := a.loadStops()
 	if err != nil {
 		return fmt.Errorf("load planner stops snapshot: %w", err)
@@ -287,6 +297,77 @@ func (a *InMemoryJourneyPlannerAdapter) ReloadSnapshot() error {
 		MinServiceDate:       minServiceDate,
 		MaxServiceDate:       maxServiceDate,
 	})
+
+	return nil
+}
+
+func (a *InMemoryJourneyPlannerAdapter) syncMetroBusFootpaths() error {
+	query := `
+		WITH candidate_pairs AS (
+			SELECT
+				metro.stop_id AS metro_stop_id,
+				bus.stop_id AS bus_stop_id,
+				ST_Distance(
+					ST_SetSRID(ST_MakePoint(metro.stop_lon, metro.stop_lat), 4326)::geography,
+					ST_SetSRID(ST_MakePoint(bus.stop_lon, bus.stop_lat), 4326)::geography
+				) AS distance_meters
+			FROM stops AS metro
+			JOIN stops AS bus
+				ON metro.stop_id LIKE 'metro:%'
+				AND bus.stop_id LIKE 'bus:%'
+				AND ST_DWithin(
+					ST_SetSRID(ST_MakePoint(metro.stop_lon, metro.stop_lat), 4326)::geography,
+					ST_SetSRID(ST_MakePoint(bus.stop_lon, bus.stop_lat), 4326)::geography,
+					?
+				)
+		),
+		purge_existing AS (
+			DELETE FROM planner_footpaths
+			WHERE (from_stop_id LIKE 'metro:%' AND to_stop_id LIKE 'bus:%')
+			   OR (from_stop_id LIKE 'bus:%' AND to_stop_id LIKE 'metro:%')
+		)
+		INSERT INTO planner_footpaths (
+			from_stop_id,
+			to_stop_id,
+			duration_seconds,
+			distance_meters,
+			indoor
+		)
+		SELECT
+			candidate_pairs.metro_stop_id,
+			candidate_pairs.bus_stop_id,
+			GREATEST(?, CEIL(candidate_pairs.distance_meters / ?)::INTEGER),
+			candidate_pairs.distance_meters,
+			FALSE
+		FROM candidate_pairs
+		UNION ALL
+		SELECT
+			candidate_pairs.bus_stop_id,
+			candidate_pairs.metro_stop_id,
+			GREATEST(?, CEIL(candidate_pairs.distance_meters / ?)::INTEGER),
+			candidate_pairs.distance_meters,
+			FALSE
+		FROM candidate_pairs
+		ON CONFLICT (from_stop_id, to_stop_id) DO UPDATE
+		SET duration_seconds = EXCLUDED.duration_seconds,
+			distance_meters = EXCLUDED.distance_meters,
+			indoor = EXCLUDED.indoor,
+			updated_at = CURRENT_TIMESTAMP
+	`
+
+	if _, err := a.db.Exec(
+		query,
+		plannerMetroBusFootpathRadiusMeters,
+		plannerMinimumFootpathSeconds,
+		plannerWalkingMetersPerSecond,
+		plannerMinimumFootpathSeconds,
+		plannerWalkingMetersPerSecond,
+	); err != nil {
+		if strings.Contains(err.Error(), `relation "planner_footpaths" does not exist`) {
+			return nil
+		}
+		return err
+	}
 
 	return nil
 }
@@ -945,19 +1026,9 @@ func (a *InMemoryJourneyPlannerAdapter) addAccessAndEgressLegs(req models.Journe
 }
 
 func (a *InMemoryJourneyPlannerAdapter) applyFares(options []models.JourneyOption) []models.JourneyOption {
-	defaultRules := a.fareService.GetFareRulesForAgency("DIMTS")
 	for i := range options {
-		if len(options[i].Legs) > 0 {
-			firstRouteID := options[i].Legs[0].RouteID
-			if firstRouteID != "" {
-				agencyID := a.fareService.GetAgencyIDFromRoute(firstRouteID)
-				if agencyID != "" {
-					defaultRules = a.fareService.GetFareRulesForAgency(agencyID)
-				}
-			}
-		}
-
-		fare := a.fareService.CalculateFareForJourney(options[i], defaultRules)
+		rules := a.fareService.ResolveFareRulesForJourney(options[i])
+		fare := a.fareService.CalculateFareForJourney(options[i], rules)
 		options[i].Fare = &fare
 	}
 	return options

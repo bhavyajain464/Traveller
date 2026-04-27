@@ -205,6 +205,31 @@ func (s *FareService) GetFareRulesForAgency(agencyID string) FareRules {
 	return DefaultFareRules
 }
 
+func (s *FareService) ResolveFareRulesForRoute(routeID string) FareRules {
+	routeID = strings.TrimSpace(routeID)
+	if routeID == "" {
+		return DefaultFareRules
+	}
+
+	agencyID := s.GetAgencyIDFromRoute(routeID)
+	if agencyID == "" {
+		return DefaultFareRules
+	}
+
+	return s.GetFareRulesForAgency(agencyID)
+}
+
+func (s *FareService) ResolveFareRulesForJourney(journey models.JourneyOption) FareRules {
+	for _, leg := range journey.Legs {
+		if strings.TrimSpace(leg.RouteID) == "" {
+			continue
+		}
+		return s.ResolveFareRulesForRoute(leg.RouteID)
+	}
+
+	return DefaultFareRules
+}
+
 func (s *FareService) GetFareProductForAgency(agencyID string) (*models.FareProduct, error) {
 	product, err := s.repo.GetActiveFareProductByAgencyID(strings.ToUpper(agencyID))
 	if err != nil {

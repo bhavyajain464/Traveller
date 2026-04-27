@@ -31,11 +31,14 @@ type AuthService struct {
 }
 
 type AuthSession struct {
-	ID        string       `json:"id"`
-	Token     string       `json:"token,omitempty"`
-	Provider  string       `json:"provider"`
-	ExpiresAt time.Time    `json:"expires_at"`
-	User      *models.User `json:"user"`
+	ID         string       `json:"id"`
+	Token      string       `json:"token,omitempty"`
+	Provider   string       `json:"provider"`
+	ExpiresAt  time.Time    `json:"expires_at"`
+	LastUsedAt *time.Time   `json:"last_used_at,omitempty"`
+	ClientIP   string       `json:"client_ip,omitempty"`
+	UserAgent  string       `json:"user_agent,omitempty"`
+	User       *models.User `json:"user"`
 }
 
 type googleTokenInfoResponse struct {
@@ -48,6 +51,11 @@ type googleTokenInfoResponse struct {
 	Picture       string `json:"picture"`
 	Exp           string `json:"exp"`
 	Iss           string `json:"iss"`
+}
+
+type AuthAccessMetadata struct {
+	ClientIP  string
+	UserAgent string
 }
 
 func NewAuthService(db *database.DB, userService *UserService, cfg config.AuthConfig) *AuthService {
@@ -69,6 +77,10 @@ func NewAuthService(db *database.DB, userService *UserService, cfg config.AuthCo
 }
 
 func (s *AuthService) LoginWithGoogle(ctx context.Context, idToken string) (*AuthSession, error) {
+	return s.LoginWithGoogleAndMetadata(ctx, idToken, AuthAccessMetadata{})
+}
+
+func (s *AuthService) LoginWithGoogleAndMetadata(ctx context.Context, idToken string, metadata AuthAccessMetadata) (*AuthSession, error) {
 	profile, err := s.verifyGoogleIDToken(ctx, idToken)
 	if err != nil {
 		return nil, err
@@ -79,16 +91,16 @@ func (s *AuthService) LoginWithGoogle(ctx context.Context, idToken string) (*Aut
 		return nil, err
 	}
 
-	return s.createSession(user, "google")
+	return s.createSession(user, "google", metadata)
 }
 
-func (s *AuthService) GetSessionByToken(token string) (*AuthSession, error) {
+func (s *AuthService) GetSessionByToken(token string, metadata AuthAccessMetadata) (*AuthSession, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, fmt.Errorf("missing auth token")
 	}
 
-	query := `SELECT s.id, s.provider, s.expires_at, u.id, u.phone_number, u.email, u.name, u.avatar_url, u.google_sub, u.auth_provider, u.status, u.payment_method, u.auto_pay_enabled, u.last_login_at, u.created_at, u.updated_at
+	query := `SELECT s.id, s.provider, s.expires_at, s.last_used_at, s.client_ip, s.user_agent, u.id, u.phone_number, u.email, u.name, u.avatar_url, u.google_sub, u.auth_provider, u.status, u.payment_method, u.auto_pay_enabled, u.last_login_at, u.created_at, u.updated_at
 		FROM auth_sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > NOW()`
@@ -103,11 +115,17 @@ func (s *AuthService) GetSessionByToken(token string) (*AuthSession, error) {
 	var authProvider sql.NullString
 	var paymentMethod sql.NullString
 	var lastLoginAt sql.NullTime
+	var lastUsedAt sql.NullTime
+	var clientIP sql.NullString
+	var userAgent sql.NullString
 
 	err := s.db.QueryRow(query, s.hashToken(token)).Scan(
 		&session.ID,
 		&session.Provider,
 		&session.ExpiresAt,
+		&lastUsedAt,
+		&clientIP,
+		&userAgent,
 		&user.ID,
 		&phoneNumber,
 		&email,
@@ -151,6 +169,31 @@ func (s *AuthService) GetSessionByToken(token string) (*AuthSession, error) {
 		t := lastLoginAt.Time
 		user.LastLoginAt = &t
 	}
+	if lastUsedAt.Valid {
+		t := lastUsedAt.Time
+		session.LastUsedAt = &t
+	}
+	if clientIP.Valid {
+		session.ClientIP = clientIP.String
+	}
+	if userAgent.Valid {
+		session.UserAgent = userAgent.String
+	}
+
+	if !strings.EqualFold(user.Status, "active") {
+		return nil, fmt.Errorf("user account is not active")
+	}
+
+	if s.shouldTouchSession(session, metadata) {
+		now := time.Now().UTC()
+		session.ExpiresAt = now.Add(s.sessionDuration)
+		session.LastUsedAt = &now
+		session.ClientIP = strings.TrimSpace(metadata.ClientIP)
+		session.UserAgent = strings.TrimSpace(metadata.UserAgent)
+		if err := s.touchSession(session.ID, session.ExpiresAt, now, metadata); err != nil {
+			return nil, fmt.Errorf("failed to refresh session: %w", err)
+		}
+	}
 
 	session.User = user
 	return session, nil
@@ -164,28 +207,71 @@ func (s *AuthService) Logout(token string) error {
 	return nil
 }
 
-func (s *AuthService) createSession(user *models.User, provider string) (*AuthSession, error) {
+func (s *AuthService) createSession(user *models.User, provider string, metadata AuthAccessMetadata) (*AuthSession, error) {
 	rawToken, err := generateOpaqueToken()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate session token: %w", err)
 	}
 
+	now := time.Now().UTC()
 	session := &AuthSession{
-		ID:        uuid.New().String(),
-		Token:     rawToken,
-		Provider:  provider,
-		ExpiresAt: time.Now().UTC().Add(s.sessionDuration),
-		User:      user,
+		ID:         uuid.New().String(),
+		Token:      rawToken,
+		Provider:   provider,
+		ExpiresAt:  now.Add(s.sessionDuration),
+		LastUsedAt: &now,
+		ClientIP:   strings.TrimSpace(metadata.ClientIP),
+		UserAgent:  strings.TrimSpace(metadata.UserAgent),
+		User:       user,
 	}
 
-	query := `INSERT INTO auth_sessions (id, user_id, token_hash, provider, expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`
-	now := time.Now().UTC()
-	if _, err := s.db.Exec(query, session.ID, user.ID, s.hashToken(rawToken), provider, session.ExpiresAt, now, now); err != nil {
+	query := `INSERT INTO auth_sessions (id, user_id, token_hash, provider, expires_at, last_used_at, client_ip, user_agent, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if _, err := s.db.Exec(query, session.ID, user.ID, s.hashToken(rawToken), provider, session.ExpiresAt, now, nullableString(session.ClientIP), nullableString(session.UserAgent), now, now); err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
 	return session, nil
+}
+
+func (s *AuthService) shouldTouchSession(session *AuthSession, metadata AuthAccessMetadata) bool {
+	now := time.Now().UTC()
+	if session == nil || session.LastUsedAt == nil {
+		return true
+	}
+	if strings.TrimSpace(metadata.ClientIP) != "" && strings.TrimSpace(metadata.ClientIP) != strings.TrimSpace(session.ClientIP) {
+		return true
+	}
+	if strings.TrimSpace(metadata.UserAgent) != "" && strings.TrimSpace(metadata.UserAgent) != strings.TrimSpace(session.UserAgent) {
+		return true
+	}
+	if now.After(session.ExpiresAt.Add(-6 * time.Hour)) {
+		return true
+	}
+	return now.Sub(*session.LastUsedAt) >= 5*time.Minute
+}
+
+func (s *AuthService) touchSession(sessionID string, expiresAt, lastUsedAt time.Time, metadata AuthAccessMetadata) error {
+	query := `UPDATE auth_sessions
+		SET expires_at = ?, last_used_at = ?, client_ip = ?, user_agent = ?, updated_at = ?
+		WHERE id = ? AND revoked_at IS NULL`
+	_, err := s.db.Exec(
+		query,
+		expiresAt,
+		lastUsedAt,
+		nullableString(strings.TrimSpace(metadata.ClientIP)),
+		nullableString(strings.TrimSpace(metadata.UserAgent)),
+		lastUsedAt,
+		sessionID,
+	)
+	return err
+}
+
+func nullableString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func (s *AuthService) verifyGoogleIDToken(ctx context.Context, idToken string) (*GoogleProfile, error) {

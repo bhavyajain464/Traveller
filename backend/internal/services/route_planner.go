@@ -160,22 +160,10 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 	}
 	allOptions = filtered
 
-	// Calculate fare for each option
-	// Use default rules (will be overridden per-leg if needed)
-	defaultRules := rp.fareService.GetFareRulesForAgency("DIMTS")
+	// Calculate fare for each option from the first resolvable transit leg.
 	for i := range allOptions {
-		// For multi-modal journeys, we'll use the first leg's agency
-		// In a more sophisticated implementation, we'd calculate fare per leg
-		if len(allOptions[i].Legs) > 0 {
-			firstRouteID := allOptions[i].Legs[0].RouteID
-			if firstRouteID != "" {
-				agencyID := rp.fareService.GetAgencyIDFromRoute(firstRouteID)
-				if agencyID != "" {
-					defaultRules = rp.fareService.GetFareRulesForAgency(agencyID)
-				}
-			}
-		}
-		fare := rp.fareService.CalculateFareForJourney(allOptions[i], defaultRules)
+		rules := rp.fareService.ResolveFareRulesForJourney(allOptions[i])
+		fare := rp.fareService.CalculateFareForJourney(allOptions[i], rules)
 		allOptions[i].Fare = &fare
 	}
 

@@ -26,7 +26,10 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 		return
 	}
 
-	session, err := h.authService.LoginWithGoogle(c.Request.Context(), req.Credential)
+	session, err := h.authService.LoginWithGoogleAndMetadata(c.Request.Context(), req.Credential, services.AuthAccessMetadata{
+		ClientIP:  c.ClientIP(),
+		UserAgent: c.GetHeader("User-Agent"),
+	})
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
