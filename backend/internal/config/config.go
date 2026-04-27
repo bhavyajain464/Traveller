@@ -9,11 +9,13 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	GTFS     GTFSConfig
-	Auth     AuthConfig
+	Server      ServerConfig
+	Database    DatabaseConfig
+	Redis       RedisConfig
+	GTFS        GTFSConfig
+	Auth        AuthConfig
+	Planner     PlannerConfig
+	PlaceSearch PlaceSearchConfig
 }
 
 type ServerConfig struct {
@@ -50,6 +52,16 @@ type AuthConfig struct {
 	SessionDurationHours int
 }
 
+type PlannerConfig struct {
+	Adapter string
+}
+
+type PlaceSearchConfig struct {
+	Provider         string
+	GoogleAPIKey     string
+	GoogleRegionCode string
+}
+
 func Load() *Config {
 	loadLocalEnvFiles()
 
@@ -82,6 +94,14 @@ func Load() *Config {
 			GoogleClientID:       getEnv("GOOGLE_CLIENT_ID", ""),
 			SessionTokenSecret:   getEnv("SESSION_TOKEN_SECRET", "traveller-dev-session-secret"),
 			SessionDurationHours: getEnvAsInt("SESSION_DURATION_HOURS", 24*30),
+		},
+		Planner: PlannerConfig{
+			Adapter: strings.ToLower(getEnv("PLANNER_ADAPTER", "in_memory")),
+		},
+		PlaceSearch: PlaceSearchConfig{
+			Provider:         strings.ToLower(getEnv("PLACE_SEARCH_PROVIDER", "stop_local")),
+			GoogleAPIKey:     getEnv("GOOGLE_MAPS_API_KEY", ""),
+			GoogleRegionCode: strings.ToLower(getEnv("PLACE_SEARCH_GOOGLE_REGION_CODE", "in")),
 		},
 	}
 }

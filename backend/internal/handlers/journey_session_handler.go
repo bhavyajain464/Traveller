@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"indian-transit-backend/internal/domain"
 	"indian-transit-backend/internal/models"
 	"indian-transit-backend/internal/services"
 )
@@ -34,6 +35,10 @@ func (h *JourneySessionHandler) CheckIn(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	if !domain.IsValidCoordinate(req.Latitude, req.Longitude) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid latitude/longitude"})
+		return
+	}
 	req.UserID = authUser.ID
 
 	session, ticket, err := h.sessionService.CheckIn(req)
@@ -60,6 +65,10 @@ func (h *JourneySessionHandler) CheckOut(c *gin.Context) {
 	var req models.CheckOutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if !domain.IsValidCoordinate(req.Latitude, req.Longitude) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid latitude/longitude"})
 		return
 	}
 

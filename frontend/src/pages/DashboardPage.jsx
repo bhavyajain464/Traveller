@@ -48,6 +48,33 @@ function DashboardPage() {
           </div>
         </section>
 
+        <section className="card planner-health-card">
+          <div className="section-heading">
+            <h3>Planner architecture</h3>
+          </div>
+          <div className="planner-status-grid">
+            <div>
+              <span>Timetable</span>
+              <strong>In memory</strong>
+            </div>
+            <div>
+              <span>Search model</span>
+              <strong>Round based</strong>
+            </div>
+            <div>
+              <span>Interchanges</span>
+              <strong>Footpath edges</strong>
+            </div>
+            <div>
+              <span>Fallback</span>
+              <strong>SQL adapter</strong>
+            </div>
+          </div>
+          <p className="status-muted">
+            The rider UI now follows the same transition path as the backend plan: snapshot planner first, richer routing behavior next, then end-goal APIs and validation.
+          </p>
+        </section>
+
         <section className="card active-ticket-card">
           <div className="section-heading">
             <h3>Active travel status</h3>

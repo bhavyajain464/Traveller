@@ -6,6 +6,7 @@ import (
 
 	"indian-transit-backend/internal/config"
 	"indian-transit-backend/internal/database"
+	"indian-transit-backend/internal/repository"
 	"indian-transit-backend/internal/services"
 )
 
@@ -20,11 +21,14 @@ func main() {
 	}
 	defer db.Close()
 
-	billService := services.NewDailyBillService(db)
+	dailyBillRepo := repository.NewDailyBillRepository(db)
+	journeySessionRepo := repository.NewJourneySessionRepository(db)
+	fareTransactionRepo := repository.NewFareTransactionRepository(db)
+	billService := services.NewDailyBillService(dailyBillRepo, journeySessionRepo, fareTransactionRepo)
 
 	// Run bill generation daily at 1 AM
 	ticker := time.NewTicker(24 * time.Hour)
-	
+
 	// Run immediately on startup for yesterday's bills
 	yesterday := time.Now().AddDate(0, 0, -1)
 	log.Printf("Generating bills for %s", yesterday.Format("2006-01-02"))
@@ -45,5 +49,3 @@ func main() {
 		}
 	}
 }
-
-

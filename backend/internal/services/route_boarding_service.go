@@ -1,26 +1,32 @@
 package services
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"indian-transit-backend/internal/database"
+	"indian-transit-backend/internal/domain"
 	"indian-transit-backend/internal/models"
+	"indian-transit-backend/internal/repository"
 )
 
 type RouteBoardingService struct {
-	db                 *database.DB
-	stopService        *StopService
-	fareService        *FareService
-	sessionService     *JourneySessionService
+	repo                   *repository.RouteBoardingRepository
+	segmentRepo            *repository.JourneySegmentRepository
+	eventRepo              *repository.JourneyEventRepository
+	fareTransactionRepo    *repository.FareTransactionRepository
+	stopService            *StopService
+	fareService            *FareService
+	sessionService         *JourneySessionService
 	vehicleLocationService *VehicleLocationService
 }
 
-func NewRouteBoardingService(db *database.DB, stopService *StopService, fareService *FareService, sessionService *JourneySessionService, vehicleLocationService *VehicleLocationService) *RouteBoardingService {
+func NewRouteBoardingService(repo *repository.RouteBoardingRepository, segmentRepo *repository.JourneySegmentRepository, eventRepo *repository.JourneyEventRepository, fareTransactionRepo *repository.FareTransactionRepository, stopService *StopService, fareService *FareService, sessionService *JourneySessionService, vehicleLocationService *VehicleLocationService) *RouteBoardingService {
 	return &RouteBoardingService{
-		db:                     db,
+		repo:                   repo,
+		segmentRepo:            segmentRepo,
+		eventRepo:              eventRepo,
+		fareTransactionRepo:    fareTransactionRepo,
 		stopService:            stopService,
 		fareService:            fareService,
 		sessionService:         sessionService,
@@ -30,23 +36,40 @@ func NewRouteBoardingService(db *database.DB, stopService *StopService, fareServ
 
 // BoardRoute records when user boards a route (called when QR is validated on vehicle)
 func (s *RouteBoardingService) BoardRoute(req models.BoardRouteRequest) (*models.RouteBoarding, error) {
+	tx, err := s.sessionService.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin board transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	boarding, err := s.BoardRouteWithExecutor(tx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit board transaction: %w", err)
+	}
+	return boarding, nil
+}
+
+func (s *RouteBoardingService) BoardRouteWithExecutor(exec repository.DBTX, req models.BoardRouteRequest) (*models.RouteBoarding, error) {
 	// Get session by QR code or session ID
 	var session *models.JourneySession
 	var err error
-	
+
 	if req.SessionID != "" {
-		session, err = s.sessionService.GetSessionByID(req.SessionID)
+		session, err = s.sessionService.repo.GetByIDWithExecutor(exec, req.SessionID)
 	} else if req.QRCode != "" {
-		session, err = s.sessionService.GetSessionByQRCode(req.QRCode)
+		session, err = s.sessionService.repo.GetByQRCodeWithExecutor(exec, req.QRCode)
 	} else {
 		return nil, fmt.Errorf("session_id or qr_code is required")
 	}
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("invalid session: %w", err)
 	}
 
-	if session.Status != "active" {
+	if !domain.IsActiveJourneyStatus(session.Status) {
 		return nil, fmt.Errorf("journey session is not active")
 	}
 
@@ -61,7 +84,7 @@ func (s *RouteBoardingService) BoardRoute(req models.BoardRouteRequest) (*models
 	}
 
 	// Check if user is already on a route (has active boarding)
-	activeBoarding, err := s.GetActiveBoarding(session.ID)
+	activeBoarding, err := s.GetActiveBoardingWithExecutor(exec, session.ID)
 	if err == nil && activeBoarding != nil {
 		return nil, fmt.Errorf("user is already on route %s. Please alight first", activeBoarding.RouteID)
 	}
@@ -70,30 +93,25 @@ func (s *RouteBoardingService) BoardRoute(req models.BoardRouteRequest) (*models
 	boardingID := uuid.New().String()
 	now := time.Now()
 	boarding := &models.RouteBoarding{
-		ID:            boardingID,
-		SessionID:     session.ID,
-		RouteID:       req.RouteID,
+		ID:             boardingID,
+		SessionID:      session.ID,
+		RouteID:        req.RouteID,
 		BoardingStopID: *stopID,
-		BoardingTime:  now,
-		BoardingLat:   req.Latitude,
-		BoardingLon:   req.Longitude,
-		Distance:      0,
-		Fare:          0,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		BoardingTime:   now,
+		BoardingLat:    req.Latitude,
+		BoardingLon:    req.Longitude,
+		Distance:       0,
+		Fare:           0,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
-	// Insert into database
-	query := `INSERT INTO route_boardings 
-		(id, session_id, route_id, vehicle_id, boarding_stop_id, boarding_time, boarding_lat, boarding_lon, distance, fare, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if err := s.repo.CreateWithExecutor(exec, boarding); err != nil {
+		return nil, err
+	}
 
-	_, err = s.db.Exec(query,
-		boarding.ID, boarding.SessionID, boarding.RouteID, boarding.VehicleID, boarding.BoardingStopID,
-		boarding.BoardingTime, boarding.BoardingLat, boarding.BoardingLon,
-		boarding.Distance, boarding.Fare, boarding.CreatedAt, boarding.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create boarding record: %w", err)
+	if err := s.createSegmentAndBoardEvent(exec, boarding, session.ID, boarding.BoardingTime); err != nil {
+		return nil, err
 	}
 
 	return boarding, nil
@@ -101,18 +119,35 @@ func (s *RouteBoardingService) BoardRoute(req models.BoardRouteRequest) (*models
 
 // AutoDetectAndBoard automatically detects which vehicle user is on and records boarding
 func (s *RouteBoardingService) AutoDetectAndBoard(sessionID string, userLat, userLon float64) (*models.RouteBoarding, *models.VehicleLocationMatch, error) {
+	tx, err := s.sessionService.db.Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin auto-board transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	boarding, match, err := s.autoDetectAndBoardWithExecutor(tx, sessionID, userLat, userLon)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit auto-board transaction: %w", err)
+	}
+	return boarding, match, nil
+}
+
+func (s *RouteBoardingService) autoDetectAndBoardWithExecutor(exec repository.DBTX, sessionID string, userLat, userLon float64) (*models.RouteBoarding, *models.VehicleLocationMatch, error) {
 	// Get session
-	session, err := s.sessionService.GetSessionByID(sessionID)
+	session, err := s.sessionService.repo.GetByIDWithExecutor(exec, sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid session: %w", err)
 	}
 
-	if session.Status != "active" {
+	if !domain.IsActiveJourneyStatus(session.Status) {
 		return nil, nil, fmt.Errorf("journey session is not active")
 	}
 
 	// Check if user is already on a route
-	activeBoarding, err := s.GetActiveBoarding(session.ID)
+	activeBoarding, err := s.GetActiveBoardingWithExecutor(exec, session.ID)
 	if err == nil && activeBoarding != nil {
 		return nil, nil, fmt.Errorf("user is already on route %s. Please alight first", activeBoarding.RouteID)
 	}
@@ -153,17 +188,12 @@ func (s *RouteBoardingService) AutoDetectAndBoard(sessionID string, userLat, use
 		UpdatedAt:      now,
 	}
 
-	// Insert into database
-	query := `INSERT INTO route_boardings 
-		(id, session_id, route_id, vehicle_id, boarding_stop_id, boarding_time, boarding_lat, boarding_lon, distance, fare, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if err := s.repo.CreateWithExecutor(exec, boarding); err != nil {
+		return nil, nil, err
+	}
 
-	_, err = s.db.Exec(query,
-		boarding.ID, boarding.SessionID, boarding.RouteID, boarding.VehicleID, boarding.BoardingStopID,
-		boarding.BoardingTime, boarding.BoardingLat, boarding.BoardingLon,
-		boarding.Distance, boarding.Fare, boarding.CreatedAt, boarding.UpdatedAt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create boarding record: %w", err)
+	if err := s.createSegmentAndBoardEvent(exec, boarding, session.ID, boarding.BoardingTime); err != nil {
+		return nil, nil, err
 	}
 
 	return boarding, match, nil
@@ -171,8 +201,25 @@ func (s *RouteBoardingService) AutoDetectAndBoard(sessionID string, userLat, use
 
 // AlightRoute records when user alights from a route
 func (s *RouteBoardingService) AlightRoute(req models.AlightRouteRequest) (*models.RouteBoarding, error) {
+	tx, err := s.sessionService.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin alight transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	boarding, err := s.AlightRouteWithExecutor(tx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit alight transaction: %w", err)
+	}
+	return boarding, nil
+}
+
+func (s *RouteBoardingService) AlightRouteWithExecutor(exec repository.DBTX, req models.AlightRouteRequest) (*models.RouteBoarding, error) {
 	// Get boarding record
-	boarding, err := s.GetBoardingByID(req.BoardingID)
+	boarding, err := s.GetBoardingByIDWithExecutor(exec, req.BoardingID)
 	if err != nil {
 		return nil, fmt.Errorf("boarding not found: %w", err)
 	}
@@ -193,18 +240,18 @@ func (s *RouteBoardingService) AlightRoute(req models.AlightRouteRequest) (*mode
 
 	// Calculate distance and fare for this route segment
 	distance := s.fareService.CalculateDistance(boarding.BoardingStopID, *stopID)
-	fmt.Printf("[AlightRoute] Boarding stop: %s, Alighting stop: %s, Distance: %.3f km\n", 
+	fmt.Printf("[AlightRoute] Boarding stop: %s, Alighting stop: %s, Distance: %.3f km\n",
 		boarding.BoardingStopID, *stopID, distance)
-	
+
 	agencyID := s.fareService.GetAgencyIDFromRoute(boarding.RouteID)
 	if agencyID == "" {
 		agencyID = "DIMTS" // Default to Delhi bus if not found
 	}
 	fmt.Printf("[AlightRoute] Route: %s, Agency: %s\n", boarding.RouteID, agencyID)
-	
+
 	rules := s.fareService.GetFareRulesForAgency(agencyID)
 	fmt.Printf("[AlightRoute] Fare rules: BaseFare=%.2f, FarePerKm=%.2f\n", rules.BaseFare, rules.FarePerKm)
-	
+
 	fare := s.fareService.CalculateRouteSegmentFare(boarding.RouteID, boarding.BoardingStopID, *stopID, distance, rules)
 	fmt.Printf("[AlightRoute] Calculated fare: ₹%.2f\n", fare)
 
@@ -221,23 +268,15 @@ func (s *RouteBoardingService) AlightRoute(req models.AlightRouteRequest) (*mode
 	boarding.Fare = fare
 	boarding.UpdatedAt = now
 
-	updateQuery := `UPDATE route_boardings SET
-		alighting_stop_id = ?,
-		alighting_time = ?,
-		alighting_lat = ?,
-		alighting_lon = ?,
-		distance = ?,
-		fare = ?,
-		updated_at = ?
-		WHERE id = ?`
+	if err := s.repo.UpdateWithExecutor(exec, boarding); err != nil {
+		return nil, err
+	}
 
-	_, err = s.db.Exec(updateQuery,
-		boarding.AlightingStopID, boarding.AlightingTime,
-		boarding.AlightingLat, boarding.AlightingLon,
-		boarding.Distance, boarding.Fare,
-		boarding.UpdatedAt, boarding.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update boarding record: %w", err)
+	if err := s.completeSegmentAndCreateAlightEvent(exec, boarding, now); err != nil {
+		return nil, err
+	}
+	if err := s.createFareTransaction(exec, boarding, agencyID, now); err != nil {
+		return nil, err
 	}
 
 	return boarding, nil
@@ -245,97 +284,25 @@ func (s *RouteBoardingService) AlightRoute(req models.AlightRouteRequest) (*mode
 
 // GetBoardingsForSession returns all route boardings for a journey session
 func (s *RouteBoardingService) GetBoardingsForSession(sessionID string) ([]models.RouteBoarding, error) {
-	query := `SELECT id, session_id, route_id, vehicle_id, boarding_stop_id, alighting_stop_id, boarding_time, alighting_time,
-		boarding_lat, boarding_lon, alighting_lat, alighting_lon, distance, fare, created_at, updated_at
-		FROM route_boardings WHERE session_id = ? ORDER BY boarding_time`
-
-	rows, err := s.db.Query(query, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get boardings: %w", err)
-	}
-	defer rows.Close()
-
-	var boardings []models.RouteBoarding
-	for rows.Next() {
-		boarding := models.RouteBoarding{}
-		var alightingStopID sql.NullString
-		var alightingTime sql.NullTime
-		var alightingLat, alightingLon sql.NullFloat64
-
-		var vehicleID sql.NullString
-		err := rows.Scan(
-			&boarding.ID, &boarding.SessionID, &boarding.RouteID, &vehicleID,
-			&boarding.BoardingStopID, &alightingStopID,
-			&boarding.BoardingTime, &alightingTime,
-			&boarding.BoardingLat, &boarding.BoardingLon,
-			&alightingLat, &alightingLon,
-			&boarding.Distance, &boarding.Fare,
-			&boarding.CreatedAt, &boarding.UpdatedAt)
-		if vehicleID.Valid {
-			boarding.VehicleID = &vehicleID.String
-		}
-		if err != nil {
-			continue
-		}
-
-		if alightingStopID.Valid {
-			boarding.AlightingStopID = &alightingStopID.String
-		}
-		if alightingTime.Valid {
-			t := alightingTime.Time
-			boarding.AlightingTime = &t
-		}
-		if alightingLat.Valid {
-			lat := alightingLat.Float64
-			boarding.AlightingLat = &lat
-		}
-		if alightingLon.Valid {
-			lon := alightingLon.Float64
-			boarding.AlightingLon = &lon
-		}
-
-		boardings = append(boardings, boarding)
-	}
-
-	return boardings, nil
+	return s.repo.ListBySessionID(sessionID)
 }
 
 // GetActiveBoarding returns the currently active boarding (user is on a route)
 func (s *RouteBoardingService) GetActiveBoarding(sessionID string) (*models.RouteBoarding, error) {
-	query := `SELECT id, session_id, route_id, vehicle_id, boarding_stop_id, alighting_stop_id, boarding_time, alighting_time,
-		boarding_lat, boarding_lon, alighting_lat, alighting_lon, distance, fare, created_at, updated_at
-		FROM route_boardings WHERE session_id = ? AND alighting_time IS NULL ORDER BY boarding_time DESC LIMIT 1`
+	return s.repo.GetActiveBySessionID(sessionID)
+}
 
-	boarding := &models.RouteBoarding{}
-	var alightingStopID sql.NullString
-	var alightingTime sql.NullTime
-	var alightingLat, alightingLon sql.NullFloat64
-
-	var vehicleID sql.NullString
-	err := s.db.QueryRow(query, sessionID).Scan(
-		&boarding.ID, &boarding.SessionID, &boarding.RouteID, &vehicleID,
-		&boarding.BoardingStopID, &alightingStopID,
-		&boarding.BoardingTime, &alightingTime,
-		&boarding.BoardingLat, &boarding.BoardingLon,
-		&alightingLat, &alightingLon,
-		&boarding.Distance, &boarding.Fare,
-		&boarding.CreatedAt, &boarding.UpdatedAt)
-	if vehicleID.Valid {
-		boarding.VehicleID = &vehicleID.String
-	}
-	if err == sql.ErrNoRows {
-		return nil, nil // No active boarding
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get active boarding: %w", err)
-	}
-
-	return boarding, nil
+func (s *RouteBoardingService) GetActiveBoardingWithExecutor(exec repository.DBTX, sessionID string) (*models.RouteBoarding, error) {
+	return s.repo.GetActiveBySessionIDWithExecutor(exec, sessionID)
 }
 
 // CalculateFareFromBoardings calculates total fare from actual route boardings
 func (s *RouteBoardingService) CalculateFareFromBoardings(sessionID string) (float64, float64, []string, error) {
-	boardings, err := s.GetBoardingsForSession(sessionID)
+	return s.CalculateFareFromBoardingsWithExecutor(s.repoDB(), sessionID)
+}
+
+func (s *RouteBoardingService) CalculateFareFromBoardingsWithExecutor(exec repository.DBTX, sessionID string) (float64, float64, []string, error) {
+	boardings, err := s.repo.ListBySessionIDWithExecutor(exec, sessionID)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -359,50 +326,145 @@ func (s *RouteBoardingService) CalculateFareFromBoardings(sessionID string) (flo
 
 // GetBoardingByID gets a boarding record by ID
 func (s *RouteBoardingService) GetBoardingByID(boardingID string) (*models.RouteBoarding, error) {
-	query := `SELECT id, session_id, route_id, vehicle_id, boarding_stop_id, alighting_stop_id, boarding_time, alighting_time,
-		boarding_lat, boarding_lon, alighting_lat, alighting_lon, distance, fare, created_at, updated_at
-		FROM route_boardings WHERE id = ?`
+	return s.GetBoardingByIDWithExecutor(s.repoDB(), boardingID)
+}
 
-	boarding := &models.RouteBoarding{}
-	var alightingStopID sql.NullString
-	var alightingTime sql.NullTime
-	var alightingLat, alightingLon sql.NullFloat64
-
-	var vehicleID sql.NullString
-	err := s.db.QueryRow(query, boardingID).Scan(
-		&boarding.ID, &boarding.SessionID, &boarding.RouteID, &vehicleID,
-		&boarding.BoardingStopID, &alightingStopID,
-		&boarding.BoardingTime, &alightingTime,
-		&boarding.BoardingLat, &boarding.BoardingLon,
-		&alightingLat, &alightingLon,
-		&boarding.Distance, &boarding.Fare,
-		&boarding.CreatedAt, &boarding.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("boarding not found")
-	}
+func (s *RouteBoardingService) GetBoardingByIDWithExecutor(exec repository.DBTX, boardingID string) (*models.RouteBoarding, error) {
+	boarding, err := s.repo.GetByIDWithExecutor(exec, boardingID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get boarding: %w", err)
 	}
-	if vehicleID.Valid {
-		boarding.VehicleID = &vehicleID.String
-	}
-
-	if alightingStopID.Valid {
-		boarding.AlightingStopID = &alightingStopID.String
-	}
-	if alightingTime.Valid {
-		t := alightingTime.Time
-		boarding.AlightingTime = &t
-	}
-	if alightingLat.Valid {
-		lat := alightingLat.Float64
-		boarding.AlightingLat = &lat
-	}
-	if alightingLon.Valid {
-		lon := alightingLon.Float64
-		boarding.AlightingLon = &lon
-	}
-
 	return boarding, nil
 }
 
+func (s *RouteBoardingService) repoDB() repository.DBTX {
+	return s.sessionService.db
+}
+
+func (s *RouteBoardingService) createSegmentAndBoardEvent(exec repository.DBTX, boarding *models.RouteBoarding, sessionID string, occurredAt time.Time) error {
+	segmentCount, err := s.segmentRepo.CountBySessionIDWithExecutor(exec, sessionID)
+	if err != nil {
+		return err
+	}
+
+	var routeBoardingID *string
+	if boarding.ID != "" {
+		routeBoardingID = &boarding.ID
+	}
+	fromStopID := boarding.BoardingStopID
+	segment := &models.JourneySegment{
+		ID:              uuid.New().String(),
+		SessionID:       sessionID,
+		RouteBoardingID: routeBoardingID,
+		SegmentIndex:    segmentCount + 1,
+		RouteID:         &boarding.RouteID,
+		VehicleID:       boarding.VehicleID,
+		FromStopID:      &fromStopID,
+		BoardedAt:       boarding.BoardingTime,
+		DistanceKM:      0,
+		FareAmount:      0,
+		Metadata:        "{}",
+		CreatedAt:       occurredAt,
+		UpdatedAt:       occurredAt,
+	}
+	if err := s.segmentRepo.CreateWithExecutor(exec, segment); err != nil {
+		return err
+	}
+
+	event := &models.JourneyEvent{
+		ID:              uuid.New().String(),
+		SessionID:       sessionID,
+		RouteBoardingID: routeBoardingID,
+		SegmentID:       &segment.ID,
+		EventType:       "boarded",
+		StopID:          &fromStopID,
+		Latitude:        &boarding.BoardingLat,
+		Longitude:       &boarding.BoardingLon,
+		OccurredAt:      occurredAt,
+		Metadata:        "{}",
+		CreatedAt:       occurredAt,
+	}
+	return s.eventRepo.CreateWithExecutor(exec, event)
+}
+
+func (s *RouteBoardingService) completeSegmentAndCreateAlightEvent(exec repository.DBTX, boarding *models.RouteBoarding, occurredAt time.Time) error {
+	segment, err := s.segmentRepo.GetByRouteBoardingIDWithExecutor(exec, boarding.ID)
+	if err != nil {
+		return err
+	}
+
+	segment.ToStopID = boarding.AlightingStopID
+	segment.AlightedAt = boarding.AlightingTime
+	segment.DistanceKM = boarding.Distance
+	segment.FareAmount = boarding.Fare
+	segment.UpdatedAt = occurredAt
+	if err := s.segmentRepo.UpdateWithExecutor(exec, segment); err != nil {
+		return err
+	}
+
+	event := &models.JourneyEvent{
+		ID:              uuid.New().String(),
+		SessionID:       boarding.SessionID,
+		RouteBoardingID: &boarding.ID,
+		SegmentID:       &segment.ID,
+		EventType:       "alighted",
+		StopID:          boarding.AlightingStopID,
+		Latitude:        boarding.AlightingLat,
+		Longitude:       boarding.AlightingLon,
+		OccurredAt:      occurredAt,
+		Metadata:        "{}",
+		CreatedAt:       occurredAt,
+	}
+	return s.eventRepo.CreateWithExecutor(exec, event)
+}
+
+func (s *RouteBoardingService) createFareTransaction(exec repository.DBTX, boarding *models.RouteBoarding, agencyID string, occurredAt time.Time) error {
+	segment, err := s.segmentRepo.GetByRouteBoardingIDWithExecutor(exec, boarding.ID)
+	if err != nil {
+		return err
+	}
+
+	product, err := s.fareService.GetFareProductForAgency(agencyID)
+	if err != nil {
+		return err
+	}
+
+	var fareProductID *string
+	ruleVersion := "legacy-v1"
+	currencyCode := "INR"
+	if product != nil {
+		fareProductID = &product.ID
+		ruleVersion = product.RuleVersion
+		currencyCode = product.CurrencyCode
+	}
+
+	sessionID := boarding.SessionID
+	segmentID := segment.ID
+	routeBoardingID := boarding.ID
+	transaction := &models.FareTransaction{
+		ID:                   uuid.New().String(),
+		UserID:               mustSessionUserID(exec, s.sessionService.repo, boarding.SessionID),
+		SessionID:            &sessionID,
+		SegmentID:            &segmentID,
+		RouteBoardingID:      &routeBoardingID,
+		FareProductID:        fareProductID,
+		Amount:               boarding.Fare,
+		CurrencyCode:         currencyCode,
+		RuleVersion:          ruleVersion,
+		Status:               "applied",
+		ReconciliationStatus: "unreconciled",
+		ChargedAt:            occurredAt,
+		Metadata:             fmt.Sprintf(`{"agency_id":"%s","route_id":"%s"}`, agencyID, boarding.RouteID),
+		CreatedAt:            occurredAt,
+		UpdatedAt:            occurredAt,
+	}
+	return s.fareTransactionRepo.CreateWithExecutor(exec, transaction)
+}
+
+func mustSessionUserID(exec repository.DBTX, repo *repository.JourneySessionRepository, sessionID string) string {
+	session, err := repo.GetByIDWithExecutor(exec, sessionID)
+	if err != nil || session == nil {
+		return ""
+	}
+	return session.UserID
+}

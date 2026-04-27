@@ -13,6 +13,43 @@ A Go-based backend service for **Traveller** - an Indian public transport app si
 - **Geospatial Queries**: Location-based queries using PostGIS
 - **REST API**: Comprehensive REST API for all transit data
 
+## Architecture Alignment
+
+The backend is now being reshaped toward the `end goal` SBB-style architecture while still running as a single deployable service today.
+
+Current runtime layering:
+
+```text
+Client apps / tools
+        |
+Gin HTTP router
+        |
+Application bootstrap (internal/app)
+        |
+Domain services (journey planner, realtime, fares, ticketing flows)
+        |
+PostgreSQL/PostGIS + Redis
+```
+
+Routing is now wired behind a planner service and adapter boundary. The default adapter is an in-memory snapshot-backed planner that owns the loaded timetable state in process, performs direct and single-transfer search from in-memory timetable indexes, and shapes that search as routing rounds rather than SQL joins. The SQL/GTFS adapter remains as a fallback for cases beyond the current in-memory rounds while we keep moving toward the end-goal RAPTOR engine.
+
+Code structure for this transition:
+
+```text
+backend/internal/
+├── app/           # bootstrap, service container, route registration
+├── domain/        # provider-neutral domain concepts and lifecycle enums
+├── repository/    # database access and row scanning for domain modules
+├── handlers/      # HTTP adapters
+├── services/      # current business logic modules
+├── gtfs/          # timetable ingestion and parsing
+├── database/      # PostgreSQL connection utilities
+├── config/        # environment-backed config
+└── models/        # persistence/API structs still being migrated upward
+```
+
+This gives us the service boundaries needed for the end-goal architecture now, while keeping existing GTFS and check-in/check-out flows working during the transition.
+
 ## Prerequisites
 
 - Go 1.19 or higher
@@ -38,8 +75,11 @@ docker compose up -d postgres redis adminer
 
 4. Run migrations:
 ```bash
+cd backend
 DATABASE_URL="postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable" go run cmd/migrate/main.go
 ```
+
+The migration runner now resolves `migrations/` safely even if a script launches it from outside `backend`, but the supported manual command is still to run it from the backend module directory.
 
 5. Load Delhi GTFS data:
 ```bash
@@ -75,12 +115,16 @@ export GOOGLE_CLIENT_ID=
 export SESSION_TOKEN_SECRET=change-me
 export SESSION_DURATION_HOURS=720
 
+# Planner
+export PLANNER_ADAPTER=in_memory  # or sql
+
 # GTFS Data
 export GTFS_DATA_PATH=../DMRC_GTFS
 ```
 
 `DATABASE_URL` (if set) takes precedence over the individual `DB_*` variables. This backend expects **PostgreSQL/PostGIS**.
 When running locally, the backend also auto-loads `.env`, `.env.local`, `backend/.env`, and `backend/.env.local` if present.
+If startup fails with a missing Phase 1 table such as `journey_events`, run the backend migrations against that same database config before restarting the server.
 
 ## Running the Server
 
@@ -172,11 +216,14 @@ backend/
 │   ├── loader/          # GTFS data loader
 │   └── scheduler/       # Daily bill generation scheduler
 ├── internal/
-│   ├── config/          # Configuration management
+│   ├── app/            # Bootstrap and route registration
+│   ├── config/         # Configuration management
 │   ├── database/       # Database connection
-│   ├── models/         # Data models
+│   ├── domain/         # Provider-neutral domain concepts
+│   ├── models/         # Existing persistence/API models
+│   ├── repository/     # Database access helpers and scanners
 │   ├── gtfs/           # GTFS parser, validator, loader
-│   ├── services/       # Business logic
+│   ├── services/       # Business logic modules
 │   ├── handlers/       # HTTP handlers
 │   ├── middleware/     # HTTP middleware
 │   └── utils/          # Helper functions (QR generation)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"indian-transit-backend/internal/domain"
 	"indian-transit-backend/internal/models"
 	"indian-transit-backend/internal/services"
 )
@@ -43,6 +44,10 @@ func (h *RouteBoardingHandler) BoardRoute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "route_id is required"})
 		return
 	}
+	if !domain.IsValidCoordinate(req.Latitude, req.Longitude) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid latitude/longitude"})
+		return
+	}
 
 	session, _ := h.resolveOwnedSession(c, authUser.ID, req.SessionID, req.QRCode)
 	if session == nil {
@@ -78,6 +83,10 @@ func (h *RouteBoardingHandler) AlightRoute(c *gin.Context) {
 
 	if req.BoardingID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "boarding_id is required"})
+		return
+	}
+	if !domain.IsValidCoordinate(req.Latitude, req.Longitude) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid latitude/longitude"})
 		return
 	}
 
@@ -182,6 +191,10 @@ func (h *RouteBoardingHandler) AutoDetectAndBoard(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	if !domain.IsValidCoordinate(req.Latitude, req.Longitude) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid latitude/longitude"})
+		return
+	}
 
 	session, _ := h.resolveOwnedSession(c, authUser.ID, req.SessionID, req.QRCode)
 	if session == nil {
@@ -221,6 +234,10 @@ func (h *RouteBoardingHandler) UpdateContinuousLocation(c *gin.Context) {
 	var req models.ContinuousLocationUpdate
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if !domain.IsValidCoordinate(req.Latitude, req.Longitude) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid latitude/longitude"})
 		return
 	}
 
@@ -348,7 +365,7 @@ func (h *RouteBoardingHandler) TrackingHeartbeat(c *gin.Context) {
 		return
 	}
 	sessionID := session.ID
-	if session.Status != "active" {
+	if !domain.IsActiveJourneyStatus(session.Status) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "journey session is not active"})
 		return
 	}

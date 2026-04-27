@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
-	"sort"
 	"time"
 
 	"indian-transit-backend/internal/database"
@@ -46,6 +46,10 @@ func NewRoutePlanner(db *database.DB, stopService *StopService, routeService *Ro
 		maxTransfers:  3,
 		maxWalkMeters: 3000.0, // adapt up to 3km so sparse areas like airport edges can still find transit
 	}
+}
+
+func (rp *RoutePlanner) Engine() string {
+	return "sql_gtfs"
 }
 
 func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.JourneyOption, error) {
@@ -105,15 +109,15 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 				// Add origin walking leg
 				if originWalkTime > 0 {
 					walkLeg := models.JourneyLeg{
-						Mode:         "walking",
-						FromStopID:   "",
-						FromStopName: "Origin",
-						ToStopID:     originStop.ID,
-						ToStopName:   originStop.Name,
+						Mode:          "walking",
+						FromStopID:    "",
+						FromStopName:  "Origin",
+						ToStopID:      originStop.ID,
+						ToStopName:    originStop.Name,
 						DepartureTime: walkStartTime,
 						ArrivalTime:   firstTransitDeparture,
-						Duration:     originWalkTime,
-						StopCount:    0,
+						Duration:      originWalkTime,
+						StopCount:     0,
 					}
 					options[i].Legs = append([]models.JourneyLeg{walkLeg}, options[i].Legs...)
 					options[i].WalkingTime += originWalkTime
@@ -124,15 +128,15 @@ func (rp *RoutePlanner) PlanJourney(req models.JourneyRequest) ([]models.Journey
 					destWalkStart := lastTransitArrival
 					destWalkArrival := destWalkStart.Add(time.Duration(destWalkTime) * time.Minute)
 					walkLeg := models.JourneyLeg{
-						Mode:         "walking",
-						FromStopID:   destStop.ID,
-						FromStopName: destStop.Name,
-						ToStopID:     "",
-						ToStopName:   "Destination",
+						Mode:          "walking",
+						FromStopID:    destStop.ID,
+						FromStopName:  destStop.Name,
+						ToStopID:      "",
+						ToStopName:    "Destination",
 						DepartureTime: destWalkStart,
 						ArrivalTime:   destWalkArrival,
-						Duration:     destWalkTime,
-						StopCount:    0,
+						Duration:      destWalkTime,
+						StopCount:     0,
 					}
 					options[i].Legs = append(options[i].Legs, walkLeg)
 					options[i].WalkingTime += destWalkTime

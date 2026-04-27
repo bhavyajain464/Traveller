@@ -20,6 +20,10 @@ type DB struct {
 	*sql.DB
 }
 
+type Tx struct {
+	*sql.Tx
+}
+
 // NewFromConfig opens a PostgreSQL/PostGIS connection using either DATABASE_URL
 // or the individual DB_* environment variables.
 func NewFromConfig(cfg config.DatabaseConfig) (*DB, error) {
@@ -91,6 +95,26 @@ func (db *DB) Query(query string, args ...any) (*sql.Rows, error) {
 
 func (db *DB) QueryRow(query string, args ...any) *sql.Row {
 	return db.DB.QueryRow(rebindPostgres(query), args...)
+}
+
+func (db *DB) Begin() (*Tx, error) {
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return &Tx{Tx: tx}, nil
+}
+
+func (tx *Tx) Exec(query string, args ...any) (sql.Result, error) {
+	return tx.Tx.Exec(rebindPostgres(query), args...)
+}
+
+func (tx *Tx) Query(query string, args ...any) (*sql.Rows, error) {
+	return tx.Tx.Query(rebindPostgres(query), args...)
+}
+
+func (tx *Tx) QueryRow(query string, args ...any) *sql.Row {
+	return tx.Tx.QueryRow(rebindPostgres(query), args...)
 }
 
 func (db *DB) Close() error {

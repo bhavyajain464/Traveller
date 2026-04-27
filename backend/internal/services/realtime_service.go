@@ -153,6 +153,8 @@ func (s *RealtimeService) GetTripUpdate(tripID string) (*TripUpdate, error) {
 }
 
 func (s *RealtimeService) GetStopArrivals(stopID string, limit int) ([]StopArrival, error) {
+	now := time.Now()
+
 	// Get scheduled departures first
 	query := `SELECT 
 		st.trip_id,
@@ -178,11 +180,11 @@ func (s *RealtimeService) GetStopArrivals(stopID string, limit int) ([]StopArriv
 			(EXTRACT(DOW FROM CURRENT_DATE) = 5 AND cal.friday = 1) OR
 			(EXTRACT(DOW FROM CURRENT_DATE) = 6 AND cal.saturday = 1)
 		)
-		AND st.departure_time >= TO_CHAR(CURRENT_TIME, 'HH24:MI:SS')
+		AND st.departure_time >= ?
 	ORDER BY st.departure_time
 	LIMIT ?`
 
-	rows, err := s.db.Query(query, stopID, limit)
+	rows, err := s.db.Query(query, stopID, now.Format("15:04:05"), limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stop arrivals: %w", err)
 	}
@@ -191,10 +193,20 @@ func (s *RealtimeService) GetStopArrivals(stopID string, limit int) ([]StopArriv
 	var arrivals []StopArrival
 	for rows.Next() {
 		var arrival StopArrival
+		var scheduledArrival string
+		var scheduledDeparture string
 		err := rows.Scan(
 			&arrival.TripID, &arrival.RouteID, &arrival.RouteShortName,
-			&arrival.RouteLongName, &arrival.ScheduledArrival, &arrival.ScheduledDeparture,
+			&arrival.RouteLongName, &scheduledArrival, &scheduledDeparture,
 			&arrival.Headsign)
+		if err != nil {
+			continue
+		}
+		arrival.ScheduledArrival, err = parseGTFSTimeOnDate(now, scheduledArrival)
+		if err != nil {
+			continue
+		}
+		arrival.ScheduledDeparture, err = parseGTFSTimeOnDate(now, scheduledDeparture)
 		if err != nil {
 			continue
 		}

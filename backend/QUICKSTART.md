@@ -163,8 +163,11 @@ docker compose exec postgres pg_isready -U traveller -d traveller
 
 ```bash
 # Run migrations manually
+cd backend
 DATABASE_URL="postgres://traveller:traveller@localhost:5432/traveller?sslmode=disable" go run cmd/migrate/main.go
 ```
+
+If the server exits with a startup error mentioning missing Phase 1 tables like `journey_events`, the connected database has not received the newer journey/fare migrations yet.
 
 ## Next Steps
 

@@ -52,10 +52,26 @@ This backend is a solid GTFS-driven prototype, but an SBB-class app needs cleare
 - Fixed inferred journey distance storage to use kilometers instead of raw meters.
 - Made QR code generation safe for short IDs so malformed/test input does not panic the process.
 
+## Architecture Sync Pass Completed
+
+- Added `internal/app` as the bootstrap layer that owns infrastructure startup, service wiring, and HTTP route registration.
+- Added `internal/domain` for provider-neutral concepts like transport modes and journey lifecycle states.
+- Moved `cmd/server` to the application bootstrap so the binary reflects the target layered architecture rather than manually wiring everything in `main.go`.
+- Kept current handlers and services intact behind the new seams so the backend still works while we continue the deeper modular split.
+- Added `internal/repository` and moved journey session and route boarding persistence/scanning out of services.
+- Moved fare lookup queries and daily billing persistence/aggregation behind repositories, including the scheduler wiring.
+- Added transactional write paths for check-in, board, auto-board, alight, checkout, and daily-bill upsert coordination.
+- Added additive schema groundwork for fare products/zones/entitlements/capping/transactions and explicit journey segments/events.
+- Added a routing interface boundary so the current SQL/GTFS planner is just the first adapter ahead of in-memory or graph-backed engines.
+- Began writing live runtime data into `journey_segments` and `journey_events` during check-in, board, auto-board, alight, and checkout.
+- Seeded baseline fare products/zones/capping rules for current Delhi defaults and began writing live `fare_transactions` on segment completion.
+- Switched daily bill reconciliation to recompute fare totals from `fare_transactions`, applying seeded daily caps during bill sync/generation.
+- Moved seeded route-type fare multipliers into fare-product metadata so the DB-backed fare path owns more of the policy surface.
+
 ## Suggested Next Pass
 
-1. Add typed domain constants and request validation for session and boarding status.
-2. Split journey session SQL scanning into repository helpers.
-3. Wrap check-in, board, alight, checkout, and daily bill updates in transactions.
-4. Introduce fare-rule database tables and move the hardcoded Delhi fare rules behind a seeded configuration.
-5. Replace daily bill date queries with indexed time-range queries.
+1. Remove the remaining hardcoded fallback fare constants once the seeded fare configuration covers all active agencies.
+2. Extend `fare_transactions` reconciliation to support reversals/waivers and richer payment states.
+3. Add a dedicated in-memory planner adapter contract and bootstrap path next to the SQL planner.
+4. Replace remaining daily bill and journey lookups with the new indexed time-range paths everywhere.
+5. Start formalizing explicit journey and billing state transitions as domain workflows.

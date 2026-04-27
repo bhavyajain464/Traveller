@@ -1,67 +1,54 @@
 package services
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 
-	"indian-transit-backend/internal/database"
 	"indian-transit-backend/internal/models"
+	"indian-transit-backend/internal/repository"
 )
 
 type FareService struct {
-	db *database.DB
+	repo *repository.FareRepository
 }
 
 // Fare rules configuration
 type FareRules struct {
-	BaseFare          float64 // Minimum fare in INR
-	FarePerKm         float64 // Fare per kilometer in INR
-	FarePerStop       float64 // Alternative: fare per stop
-	TransferFee       float64 // Additional fee for transfers
-	ACBusMultiplier   float64 // Multiplier for AC buses
+	BaseFare             float64 // Minimum fare in INR
+	FarePerKm            float64 // Fare per kilometer in INR
+	FarePerStop          float64 // Alternative: fare per stop
+	TransferFee          float64 // Additional fee for transfers
+	ACBusMultiplier      float64 // Multiplier for AC buses
 	ExpressBusMultiplier float64 // Multiplier for express buses
 }
 
-// Default fare rules (approximate - should be configured per agency)
+type farePolicyMetadata struct {
+	ACMultiplier      *float64 `json:"ac_multiplier"`
+	ExpressMultiplier *float64 `json:"express_multiplier"`
+	TransferPolicy    string   `json:"transfer_policy"`
+}
+
+// Default fare rules are only an emergency fallback when seeded fare config
+// is unavailable for an agency.
 var DefaultFareRules = FareRules{
-	BaseFare:           5.0,   // Minimum ₹5
-	FarePerKm:          2.0,    // ₹2 per km
-	FarePerStop:        0.0,   // Not used if FarePerKm > 0
-	TransferFee:        2.0,    // ₹2 per transfer
-	ACBusMultiplier:    1.5,    // 1.5x for AC buses
-	ExpressBusMultiplier: 1.2,  // 1.2x for express buses
-}
-
-// Delhi Metro fare rules
-var DMRCFareRules = FareRules{
-	BaseFare:           10.0,  // Minimum ₹10 for metro
-	FarePerKm:          2.5,   // ₹2.5 per km for metro
-	FarePerStop:        0.0,
-	TransferFee:        0.0,   // No transfer fee within metro system
-	ACBusMultiplier:    1.0,   // Not applicable
-	ExpressBusMultiplier: 1.0, // Not applicable
-}
-
-// Delhi Bus fare rules (DIMTS + DTC)
-var DelhiBusFareRules = FareRules{
-	BaseFare:           5.0,   // Minimum ₹5
-	FarePerKm:          1.5,   // ₹1.5 per km
-	FarePerStop:        0.0,
-	TransferFee:        2.0,   // ₹2 per transfer
-	ACBusMultiplier:    1.5,   // 1.5x for AC buses
+	BaseFare:             5.0, // Minimum ₹5
+	FarePerKm:            2.0, // ₹2 per km
+	FarePerStop:          0.0, // Not used if FarePerKm > 0
+	TransferFee:          2.0, // ₹2 per transfer
+	ACBusMultiplier:      1.5, // 1.5x for AC buses
 	ExpressBusMultiplier: 1.2, // 1.2x for express buses
 }
 
-func NewFareService(db *database.DB) *FareService {
-	return &FareService{db: db}
+func NewFareService(repo *repository.FareRepository) *FareService {
+	return &FareService{repo: repo}
 }
 
 // GetAgencyIDFromRoute gets the agency ID for a given route
 func (s *FareService) GetAgencyIDFromRoute(routeID string) string {
-	query := `SELECT agency_id FROM routes WHERE route_id = ?`
-	var agencyID string
-	err := s.db.QueryRow(query, routeID).Scan(&agencyID)
+	agencyID, err := s.repo.GetAgencyIDByRouteID(routeID)
 	if err != nil {
 		return "" // Return empty string if route not found
 	}
@@ -128,15 +115,16 @@ func (s *FareService) calculateLegFare(leg models.JourneyLeg, rules FareRules) f
 
 // CalculateDistance calculates distance between two stops in kilometers
 func (s *FareService) CalculateDistance(fromStopID, toStopID string) float64 {
-	query := `SELECT s1.stop_lat, s1.stop_lon, s2.stop_lat, s2.stop_lon
-		FROM stops s1
-		CROSS JOIN stops s2
-		WHERE s1.stop_id = ? AND s2.stop_id = ?`
+	lat1, lon1, err := s.repo.GetStopCoordinates(fromStopID)
+	if err != nil {
+		fmt.Printf("[CalculateDistance] Error getting coordinates for stop %s: %v\n", fromStopID, err)
+		return 0.5
+	}
 
-	var lat1, lon1, lat2, lon2 float64
-	if err := s.db.QueryRow(query, fromStopID, toStopID).Scan(&lat1, &lon1, &lat2, &lon2); err != nil {
+	lat2, lon2, err := s.repo.GetStopCoordinates(toStopID)
+	if err != nil {
+		fmt.Printf("[CalculateDistance] Error getting coordinates for stop %s: %v\n", toStopID, err)
 		fmt.Printf("[CalculateDistance] Error getting coordinates for stops %s and %s: %v\n", fromStopID, toStopID, err)
-		// Fallback: assume average 500m between stops
 		return 0.5
 	}
 
@@ -147,10 +135,7 @@ func (s *FareService) CalculateDistance(fromStopID, toStopID string) float64 {
 
 // getRouteType determines route type from route ID or name
 func (s *FareService) getRouteType(routeID string) string {
-	// Check route name for indicators
-	query := `SELECT route_short_name, route_long_name FROM routes WHERE route_id = ?`
-	var shortName, longName string
-	err := s.db.QueryRow(query, routeID).Scan(&shortName, &longName)
+	shortName, longName, err := s.repo.GetRouteNames(routeID)
 	if err != nil {
 		return "Ordinary"
 	}
@@ -196,15 +181,39 @@ func (s *FareService) GetRouteFare(routeID string, fromStopID, toStopID string, 
 
 // GetFareRulesForAgency gets fare rules for a specific agency
 func (s *FareService) GetFareRulesForAgency(agencyID string) FareRules {
-	// Return agency-specific fare rules
-	switch strings.ToUpper(agencyID) {
-	case "DMRC":
-		return DMRCFareRules
-	case "DIMTS", "DTC":
-		return DelhiBusFareRules
-	default:
-		return DefaultFareRules
+	product, err := s.repo.GetActiveFareProductByAgencyID(strings.ToUpper(agencyID))
+	if err == nil && product != nil {
+		policy := parseFarePolicyMetadata(product.Metadata)
+		acMultiplier := 1.0
+		expressMultiplier := 1.0
+		if policy.ACMultiplier != nil {
+			acMultiplier = *policy.ACMultiplier
+		}
+		if policy.ExpressMultiplier != nil {
+			expressMultiplier = *policy.ExpressMultiplier
+		}
+		return FareRules{
+			BaseFare:             product.BaseFare,
+			FarePerKm:            product.FarePerKM,
+			FarePerStop:          product.FarePerStop,
+			TransferFee:          product.TransferFee,
+			ACBusMultiplier:      acMultiplier,
+			ExpressBusMultiplier: expressMultiplier,
+		}
 	}
+
+	return DefaultFareRules
+}
+
+func (s *FareService) GetFareProductForAgency(agencyID string) (*models.FareProduct, error) {
+	product, err := s.repo.GetActiveFareProductByAgencyID(strings.ToUpper(agencyID))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return product, nil
 }
 
 // CalculateRouteSegmentFare calculates fare for a single route segment (boarding to alighting)
@@ -219,7 +228,7 @@ func (s *FareService) CalculateRouteSegmentFare(routeID, fromStopID, toStopID st
 		multiplier = rules.ExpressBusMultiplier
 	}
 
-	fmt.Printf("[CalculateRouteSegmentFare] Route: %s, Type: %s, Multiplier: %.2f, Distance: %.3f km, FarePerKm: %.2f\n", 
+	fmt.Printf("[CalculateRouteSegmentFare] Route: %s, Type: %s, Multiplier: %.2f, Distance: %.3f km, FarePerKm: %.2f\n",
 		routeID, routeType, multiplier, distance, rules.FarePerKm)
 
 	fare := distance * rules.FarePerKm * multiplier
@@ -228,7 +237,7 @@ func (s *FareService) CalculateRouteSegmentFare(routeID, fromStopID, toStopID st
 	}
 
 	finalFare := math.Round(fare*100) / 100
-	fmt.Printf("[CalculateRouteSegmentFare] Final fare: ₹%.2f (distance: %.3f km × %.2f/km × %.2f multiplier, min: ₹%.2f)\n", 
+	fmt.Printf("[CalculateRouteSegmentFare] Final fare: ₹%.2f (distance: %.3f km × %.2f/km × %.2f multiplier, min: ₹%.2f)\n",
 		finalFare, distance, rules.FarePerKm, multiplier, rules.BaseFare)
 	return finalFare
 }
@@ -237,4 +246,16 @@ func containsIgnoreCase(s, substr string) bool {
 	sLower := strings.ToLower(s)
 	substrLower := strings.ToLower(substr)
 	return strings.Contains(sLower, substrLower)
+}
+
+func parseFarePolicyMetadata(raw string) farePolicyMetadata {
+	if raw == "" {
+		return farePolicyMetadata{}
+	}
+
+	var metadata farePolicyMetadata
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return farePolicyMetadata{}
+	}
+	return metadata
 }

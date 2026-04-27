@@ -11,10 +11,10 @@ import (
 )
 
 type JourneyHandler struct {
-	routePlanner *services.RoutePlanner
+	routePlanner services.JourneyPlanner
 }
 
-func NewJourneyHandler(routePlanner *services.RoutePlanner) *JourneyHandler {
+func NewJourneyHandler(routePlanner services.JourneyPlanner) *JourneyHandler {
 	return &JourneyHandler{routePlanner: routePlanner}
 }
 
@@ -126,5 +126,3 @@ func (h *JourneyHandler) PlanJourney(c *gin.Context) {
 		"count":   len(options),
 	})
 }
-
-

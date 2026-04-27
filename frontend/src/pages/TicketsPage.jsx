@@ -29,6 +29,7 @@ function TicketsPage() {
   const [trackingMessage, setTrackingMessage] = useState("");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
+  const overdueBills = pendingBills.filter((bill) => isBillOverdue(bill.bill_date));
 
   useEffect(() => {
     let ignore = false;
@@ -204,7 +205,7 @@ function TicketsPage() {
     activeSession,
     activeBoarding,
     boardings,
-    pendingBills
+    overdueBills
   });
 
   return (
@@ -220,20 +221,20 @@ function TicketsPage() {
 
       {error ? <section className="card"><p className="status-error">{error}</p></section> : null}
 
-      {pendingBills.length > 0 && !activeSession ? (
+      {overdueBills.length > 0 && !activeSession ? (
         <section className="card selected-card">
           <p className="eyebrow">Billing Gate</p>
-          <h3>Today&apos;s bill pending</h3>
+          <h3>Overdue bill pending</h3>
           <p className="lead">
-            New travel is blocked until the outstanding daily bill is paid.
+            New travel is blocked until the outstanding bill from a previous day is paid.
           </p>
           <div className="route-meta-grid">
             <div>
-              <strong>{pendingBills.length}</strong>
-              <span>Pending bill{pendingBills.length === 1 ? "" : "s"}</span>
+              <strong>{overdueBills.length}</strong>
+              <span>Overdue bill{overdueBills.length === 1 ? "" : "s"}</span>
             </div>
             <div>
-              <strong>{formatCurrency(sumPendingBills(pendingBills))}</strong>
+              <strong>{formatCurrency(sumPendingBills(overdueBills))}</strong>
               <span>Outstanding total</span>
             </div>
           </div>
@@ -340,7 +341,7 @@ function TicketsPage() {
             <button
               type="button"
               className="primary-button"
-              disabled={busyAction === "checkin" || pendingBills.length > 0}
+              disabled={busyAction === "checkin" || overdueBills.length > 0}
               onClick={checkIn}
             >
               {busyAction === "checkin" ? "Starting tracking..." : "Start Tracking And Generate Ticket"}
@@ -366,11 +367,11 @@ async function getBoardingSnapshot(sessionID) {
   };
 }
 
-function getTrackingState({ activeSession, activeBoarding, boardings, pendingBills }) {
-  if (!activeSession && pendingBills.length > 0) {
+function getTrackingState({ activeSession, activeBoarding, boardings, overdueBills }) {
+  if (!activeSession && overdueBills.length > 0) {
     return {
-      label: "Today's bill pending",
-      description: "Settle your unpaid daily bill before starting the next travel day."
+      label: "Overdue bill pending",
+      description: "Settle unpaid bills from previous days before starting the next travel day."
     };
   }
 
@@ -430,6 +431,17 @@ function formatCurrency(value) {
 
 function formatDateTime(value) {
   return new Date(value).toLocaleString();
+}
+
+function isBillOverdue(billDateValue) {
+  if (!billDateValue) {
+    return false;
+  }
+
+  const billDate = new Date(billDateValue);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  return billDate < todayStart;
 }
 
 function getCurrentPosition() {

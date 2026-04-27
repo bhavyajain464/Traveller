@@ -1,4 +1,7 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api/v1";
+const RAW_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+const API_ROOT_URL = RAW_API_BASE_URL.replace(/\/api\/v1\/?$/, "");
+const API_V1_BASE_URL = `${API_ROOT_URL}/api/v1`;
+const API_BASE_URL = API_V1_BASE_URL;
 const AUTH_TOKEN_KEY = "traveller.auth.token";
 
 export function getAuthToken() {
@@ -34,7 +37,7 @@ export async function apiRequest(path, options = {}) {
     ...(options.headers || {})
   };
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildApiURL(path), {
     ...options,
     headers
   });
@@ -53,4 +56,16 @@ export async function apiRequest(path, options = {}) {
   return payload;
 }
 
-export { API_BASE_URL, AUTH_TOKEN_KEY };
+function buildApiURL(path) {
+  if (/^https?:\/\//.test(path)) {
+    return path;
+  }
+
+  if (path.startsWith("/v3/") || path === "/health") {
+    return `${API_ROOT_URL}${path}`;
+  }
+
+  return `${API_V1_BASE_URL}${path}`;
+}
+
+export { API_ROOT_URL, API_V1_BASE_URL, API_BASE_URL, AUTH_TOKEN_KEY };
