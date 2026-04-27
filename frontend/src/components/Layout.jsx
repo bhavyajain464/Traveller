@@ -45,7 +45,7 @@ function Layout() {
           ))}
         </nav>
         <div className="sidebar-footnote">
-          <span>Advanced operational tools live under Profile.</span>
+          <span>Profile now centers your tickets, bills, journey history, and account details.</span>
         </div>
       </aside>
       <main className="content">

@@ -11,6 +11,8 @@ in-karnataka-*/
 
 # Build artifacts
 bin/
+.gocache/
+backend/.gocache/
 *.exe
 *.exe~
 *.dll
@@ -53,4 +55,3 @@ docker-compose.override.yml
 # Data scraper output
 data-scraper/output/
 backend/tmp/
-
